@@ -1,11 +1,11 @@
 version: '3.8'
 
 services:
-  friday_bot:
+  groot_bot:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: friday_telegram_bot
+    container_name: groot_telegram_bot
     restart: unless-stopped
     env_file:
       - .env

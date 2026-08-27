@@ -1,1 +1,1 @@
-# Package initialization for Friday's Telegram Bot App
+# Package initialization for Groot's Telegram Bot App

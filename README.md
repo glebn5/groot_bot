@@ -1,4 +1,4 @@
-# Friday's Bot — Личный Мультимодальный Telegram-Ассистент 🤖
+# Groot Bot — Личный Мультимодальный Telegram-Ассистент 🌴
 
 Production-ready Telegram-бот на базе **aiogram 3.x**, **Groq API** (Whisper STT & Llama Vision/LLM), **WebDAV** (Obsidian), **Google Calendar** и **APScheduler**.
 
@@ -20,8 +20,8 @@ Production-ready Telegram-бот на базе **aiogram 3.x**, **Groq API** (Wh
 
 ### Шаг 1. Скопируйте репозиторий на ваш VPS
 ```bash
-git clone https://github.com/your-user/fridays_bot.git /opt/fridays_bot
-cd /opt/fridays_bot
+git clone https://github.com/your-user/groot_bot.git /opt/groot_bot
+cd /opt/groot_bot
 ```
 
 ### Шаг 2. Создайте файл окружения `.env` и ключи Google
@@ -48,14 +48,14 @@ docker compose up -d --build
 
 Проверить статус работы и логи бота:
 ```bash
-docker compose logs -f friday_bot
+docker compose logs -f groot_bot
 ```
 
 ---
 
 ## 📁 Структура проекта:
 ```
-Friday's_bot/
+groot_bot/
 ├── .env.example
 ├── Dockerfile
 ├── docker-compose.yml

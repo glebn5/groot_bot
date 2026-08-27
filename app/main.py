@@ -20,7 +20,7 @@ logger = logging.getLogger("app.main")
 
 
 async def main():
-    logger.info("Initializing Friday's Telegram Bot...")
+    logger.info("Initializing Groot's Telegram Bot...")
 
     bot = Bot(
         token=settings.BOT_TOKEN,

@@ -11,7 +11,7 @@ from app.models.schemas import ParsedAction
 logger = logging.getLogger(__name__)
 
 
-SYSTEM_PROMPT = """Ты — интеллектуальный ассистент Пятница (Friday), помогающий пользователю управлять задачами, событиями календаря, напоминаниями и заметками в Obsidian.
+SYSTEM_PROMPT = """Ты — интеллектуальный ассистент Грут (Groot), помогающий пользователю управлять задачами, событиями календаря, напоминаниями и заметками в Obsidian.
 
 Текущая дата и время сервера: {current_datetime} (день недели: {day_of_week}).
 

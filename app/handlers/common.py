@@ -8,7 +8,7 @@ router = Router(name="common")
 @router.message(CommandStart())
 async def cmd_start(message: Message):
     welcome_text = (
-        "👋 **Привет! Я Пятница (Friday)** — твой личный мультимодальный ассистент.\n\n"
+        "👋 **Привет! Я Грут (Groot)** — твой личный мультимодальный ассистент.\n\n"
         "Я умею:\n"
         "• 📝 Добавлять задачи в ежедневные заметки Obsidian (Mail.ru WebDAV)\n"
         "• 📅 Создавать события в Google Календаре\n"
