@@ -1,0 +1,53 @@
+import os
+import tempfile
+import logging
+from aiogram import Router, Bot, F
+from aiogram.enums import ChatAction
+from aiogram.types import Message
+
+from app.services.stt import stt_service
+from app.services.llm import llm_service
+from app.handlers.text import execute_action_pipeline
+
+logger = logging.getLogger(__name__)
+router = Router(name="voice")
+
+
+@router.message(F.voice | F.audio)
+async def handle_voice_message(message: Message, bot: Bot):
+    await bot.send_chat_action(chat_id=message.chat.id, action=ChatAction.RECORD_VOICE)
+    
+    voice_or_audio = message.voice or message.audio
+    if not voice_or_audio:
+        await message.answer("❌ Не удалось получить аудиофайл.")
+        return
+
+    tmp_path = None
+    try:
+        # Download voice file from Telegram
+        file_info = await bot.get_file(voice_or_audio.file_id)
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".ogg") as tmp_file:
+            tmp_path = tmp_file.name
+
+        await bot.download_file(file_info.file_path, tmp_path)
+        logger.info(f"Downloaded voice message to temporary file: {tmp_path}")
+
+        # Transcribe audio using Groq Whisper API
+        transcribed_text = await stt_service.transcribe_audio_file(tmp_path)
+        
+        # Inform user of transcribed text
+        await message.answer(f"🎙 **Расшифровка голоса:**\n\n_{transcribed_text}_", parse_mode="Markdown")
+
+        # Process request with LLM & execute pipeline
+        await bot.send_chat_action(chat_id=message.chat.id, action=ChatAction.TYPING)
+        parsed_action = await llm_service.parse_user_request(text_content=transcribed_text)
+        reply = await execute_action_pipeline(bot, message.chat.id, parsed_action)
+        
+        await message.answer(reply, parse_mode="Markdown")
+
+    except Exception as e:
+        logger.error(f"Error handling voice message: {e}", exc_info=True)
+        await message.answer(f"❌ Ошибка обработки голосового сообщения: {str(e)}")
+    finally:
+        if tmp_path and os.path.exists(tmp_path):
+            os.remove(tmp_path)
