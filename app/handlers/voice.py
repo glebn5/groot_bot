@@ -7,6 +7,7 @@ from aiogram.types import Message
 
 from app.services.stt import stt_service
 from app.services.llm import llm_service
+from app.services.context import context_service
 from app.handlers.text import execute_action_pipeline
 
 logger = logging.getLogger(__name__)
@@ -40,7 +41,8 @@ async def handle_voice_message(message: Message, bot: Bot):
 
         # Process request with LLM & execute pipeline
         await bot.send_chat_action(chat_id=message.chat.id, action=ChatAction.TYPING)
-        parsed_action = await llm_service.parse_user_request(text_content=transcribed_text)
+        ctx_date = context_service.get_last_date(message.chat.id)
+        parsed_action = await llm_service.parse_user_request(text_content=transcribed_text, context_date=ctx_date)
         reply = await execute_action_pipeline(bot, message.chat.id, parsed_action)
         
         await message.answer(reply, parse_mode="Markdown")

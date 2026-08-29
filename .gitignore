@@ -14,3 +14,9 @@ data/
 .vscode/
 .idea/
 .DS_Store
+
+# Virtual Environment
+venv/
+ENV/
+env/
+*.log

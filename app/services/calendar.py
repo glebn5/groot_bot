@@ -16,6 +16,9 @@ class CalendarService:
         self.service = None
         self._init_service()
 
+    def is_configured(self) -> bool:
+        return self.service is not None
+
     def _init_service(self):
         sa_file = settings.GOOGLE_SERVICE_ACCOUNT_FILE
         if os.path.exists(sa_file):
@@ -71,6 +74,33 @@ class CalendarService:
         except Exception as e:
             logger.error(f"Error creating Google Calendar event: {e}", exc_info=True)
             raise RuntimeError(f"Failed to create Google Calendar event: {str(e)}")
+
+    async def get_events_for_date(self, target_date) -> list:
+        """
+        Retrieves list of events from Google Calendar for specific target_date.
+        """
+        return await self.get_events_for_date_range(target_date, target_date)
+
+    async def get_events_for_date_range(self, start_date, end_date) -> list:
+        """
+        Retrieves list of events from Google Calendar between start_date and end_date.
+        """
+        if not self.service:
+            return []
+        try:
+            start_of_day = datetime.combine(start_date, datetime.min.time()).isoformat() + 'Z'
+            end_of_day = datetime.combine(end_date, datetime.max.time()).isoformat() + 'Z'
+            events_result = self.service.events().list(
+                calendarId=settings.GOOGLE_CALENDAR_ID,
+                timeMin=start_of_day,
+                timeMax=end_of_day,
+                singleEvents=True,
+                orderBy='startTime'
+            ).execute()
+            return events_result.get('items', [])
+        except Exception as e:
+            logger.error(f"Error fetching Google Calendar events for range {start_date} to {end_date}: {e}")
+            return []
 
 
 calendar_service = CalendarService()

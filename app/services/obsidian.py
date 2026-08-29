@@ -19,6 +19,11 @@ class ObsidianService:
         }
         self.client = Client(options)
 
+    def is_configured(self) -> bool:
+        login = (settings.WEBDAV_LOGIN or "").strip()
+        pwd = (settings.WEBDAV_PASSWORD or "").strip()
+        return bool(login and pwd and login != "your_email@mail.ru" and pwd != "your_app_password" and not login.startswith("your_"))
+
     def _get_remote_daily_path(self, target_date: date) -> str:
         date_str = target_date.strftime("%Y-%m-%d")
         vault = settings.WEBDAV_VAULT_PATH.rstrip('/')
@@ -77,11 +82,15 @@ class ObsidianService:
 
         return "\n".join(lines) + "\n"
 
-    async def add_task_to_daily_note(self, task_text: str, target_date: Optional[date] = None, target_section: str = "## Задачи на сегодня") -> str:
+    async def add_task_to_daily_note(self, task_text: str, target_date: Optional[date] = None, target_section: str = "## Задачи на сегодня") -> Optional[str]:
         """
         Adds a task to the user's Obsidian daily note on WebDAV.
         If the file doesn't exist, initializes it from To-Do template.md first.
         """
+        if not self.is_configured():
+            logger.info("Obsidian WebDAV credentials not configured. Skipping Obsidian sync.")
+            return None
+
         if not target_date:
             target_date = date.today()
 
@@ -126,6 +135,38 @@ class ObsidianService:
         except Exception as e:
             logger.error(f"Error updating Obsidian WebDAV note: {e}", exc_info=True)
             raise RuntimeError(f"Failed to sync with Obsidian WebDAV: {str(e)}")
+
+    async def get_daily_tasks(self, target_date: date) -> list:
+        """
+        Retrieves task lines (e.g. '- [ ] ...' or '- [x] ...') from daily note in WebDAV.
+        """
+        if not self.is_configured():
+            return []
+
+        remote_path = self._get_remote_daily_path(target_date)
+        try:
+            if not self.client.check(remote_path):
+                return []
+
+            with tempfile.NamedTemporaryFile(mode="w+", delete=False, encoding="utf-8", suffix=".md") as tmp_file:
+                tmp_path = tmp_file.name
+
+            self.client.download_sync(remote_path=remote_path, local_path=tmp_path)
+            with open(tmp_path, "r", encoding="utf-8") as f:
+                content = f.read()
+
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+
+            tasks = []
+            for line in content.splitlines():
+                stripped = line.strip()
+                if stripped.startswith("- [") or stripped.startswith("* ["):
+                    tasks.append(stripped)
+            return tasks
+        except Exception as e:
+            logger.error(f"Error fetching Obsidian daily note tasks: {e}")
+            return []
 
 
 obsidian_service = ObsidianService()

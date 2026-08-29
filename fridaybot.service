@@ -1,0 +1,15 @@
+[Unit]
+Description=Groot Friday Telegram Bot
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/FridayBot
+ExecStart=/opt/FridayBot/venv/bin/python -m app.main
+Restart=always
+RestartSec=5
+EnvironmentFile=/opt/FridayBot/.env
+
+[Install]
+WantedBy=multi-user.target
