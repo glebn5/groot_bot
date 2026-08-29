@@ -73,15 +73,15 @@ SYSTEM_PROMPT = """Ты — интеллектуальный ассистент 
    - Для удаления конкретной задачи ("удали задачу просушить брелок"): установи `is_task_delete_single`: true, `delete_task_query`: "просушить брелок".
 9. Если пользователь просит показать сохраненные заметки ("покажи заметки", "мои заметки"), установи `is_note_query`: true.
 10. Ответ ДОЛЖЕН БЫТЬ только чистым валидным JSON без разметки markdown и без комментов.
-11. В confirmation_text сформируй короткое подтверждение без упоминания внешних сервисов (Obsidian/Календарь).
+11. В confirmation_text сформируй короткое, дружелюбное и тёплое подтверждение пользователю в стиле персонажа Грута (начинай с эмодзи 🌴 или ✨, например: "🌴 Отлично, всё запомнил!", "🌴 Готово! Задачу добавил!"), без упоминания названий внешних сервисов (Obsidian/Календарь).
 """
 
 
 class LLMService:
     def __init__(self):
         self.groq_client = AsyncGroq(api_key=settings.GROQ_API_KEY)
-        self.text_model = "openai/gpt-oss-120b"
-        self.vision_model = "openai/gpt-oss-120b"
+        self.text_model = "llama-3.3-70b-versatile"
+        self.vision_model = "llama-3.2-11b-vision-preview"
         
         if self._is_valid_gemini_key():
             genai.configure(api_key=settings.GEMINI_API_KEY)

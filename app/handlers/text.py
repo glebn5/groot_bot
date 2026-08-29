@@ -39,7 +39,7 @@ async def execute_action_pipeline(bot: Bot, chat_id: int, action: ParsedAction) 
         if moved:
             old_str = datetime.strptime(moved['old_date'], "%Y-%m-%d").strftime("%d.%m.%Y")
             new_str = datetime.strptime(moved['new_date'], "%Y-%m-%d").strftime("%d.%m.%Y")
-            return f"🔄 Задача **«{moved['task_text']}»** успешно перенесена с {old_str} на {new_str}!"
+            return f"🌴 **Готово!** Перенёс задачу **«{moved['task_text']}»** с {old_str} на {new_str} ✨"
 
     # 0. Handle Task Clearing ("убери все задачи", "очисти задачи")
     if action.is_task_clear:
@@ -47,16 +47,16 @@ async def execute_action_pipeline(bot: Bot, chat_id: int, action: ParsedAction) 
         count = await tasks_service.clear_tasks_for_date(chat_id, target_clear_date)
         if target_clear_date:
             d_str = target_clear_date.strftime("%d.%m.%Y")
-            return f"🗑 Все задачи на {d_str} удалены (всего: {count})."
+            return f"🌴 Все задачи на {d_str} успешно удалены (всего: {count}) 🗑"
         else:
-            return f"🗑 Все ваши задачи успешно удалены (всего: {count})."
+            return f"🌴 Все ваши задачи успешно удалены (всего: {count}) 🗑"
 
     # 0. Handle Single Task Deletion ("удали задачу...")
     if action.is_task_delete_single and action.delete_task_query:
         target_del_date = action.task_date or context_service.get_last_date(chat_id)
         deleted = await tasks_service.delete_task_by_query(chat_id, action.delete_task_query, target_del_date)
         if deleted:
-            return f"🗑 Задача по запросу **«{action.delete_task_query}»** успешно удалена!"
+            return f"🌴 Задача **«{action.delete_task_query}»** успешно удалена 🗑"
         else:
             return f"⚠️ Задача по запросу «{action.delete_task_query}» не найдена."
 
@@ -71,14 +71,14 @@ async def execute_action_pipeline(bot: Bot, chat_id: int, action: ParsedAction) 
         schedule_lines = []
 
         if start_date == end_date:
-            header_str = f"📅 **Планы на {start_date.strftime('%d.%m.%Y')}:**\n\n"
+            header_str = f"🌴 **Привет! Вот твои планы на {start_date.strftime('%d.%m.%Y')}:**\n\n"
         else:
-            header_str = f"📅 **Планы с {start_date.strftime('%d.%m.%Y')} по {end_date.strftime('%d.%m.%Y')}:**\n\n"
+            header_str = f"🌴 **Привет! Вот твои планы с {start_date.strftime('%d.%m.%Y')} по {end_date.strftime('%d.%m.%Y')}:**\n\n"
 
         # 1) Get local tasks for date range
         local_tasks = await tasks_service.get_tasks_for_date_range(chat_id, start_date, end_date)
         if local_tasks:
-            schedule_lines.append("📋 **Задачи:**")
+            schedule_lines.append("✨ **Что нужно сделать:**")
             for t in local_tasks:
                 status_icon = "✅" if t.get("is_completed") else "▫️"
                 t_date_str = datetime.strptime(t['target_date'], "%Y-%m-%d").strftime("%d.%m")
@@ -92,7 +92,7 @@ async def execute_action_pipeline(bot: Bot, chat_id: int, action: ParsedAction) 
         if reminders:
             if schedule_lines:
                 schedule_lines.append("")
-            schedule_lines.append("⏰ **Напоминания (Telegram):**")
+            schedule_lines.append("🔔 **Не забудь:**")
             for r in reminders:
                 if start_date == end_date:
                     schedule_lines.append(f"  • {r['time']} — {r['message']}")
@@ -104,7 +104,7 @@ async def execute_action_pipeline(bot: Bot, chat_id: int, action: ParsedAction) 
         if events:
             if schedule_lines:
                 schedule_lines.append("")
-            schedule_lines.append("📅 **Google Календарь:**")
+            schedule_lines.append("📅 **В календаре:**")
             for ev in events:
                 summary = ev.get('summary', 'Без названия')
                 start_dt = ev.get('start', {}).get('dateTime', '')
@@ -120,15 +120,15 @@ async def execute_action_pipeline(bot: Bot, chat_id: int, action: ParsedAction) 
         if obs_tasks:
             if schedule_lines:
                 schedule_lines.append("")
-            schedule_lines.append("📝 **Obsidian:**")
+            schedule_lines.append("📝 **В Obsidian:**")
             for t in obs_tasks:
                 schedule_lines.append(f"  {t}")
 
         if not schedule_lines:
             if start_date == end_date:
-                return f"📌 **Планы на {start_date.strftime('%d.%m.%Y')}:**\n\nЗапланированных задач, событий или напоминаний не найдено!"
+                return f"🌴 **Привет! На {start_date.strftime('%d.%m.%Y')} планов пока нет.**\nВсё свободно! Вы отдыхаете или хотите добавить новую задачу?"
             else:
-                return f"📌 **Планы с {start_date.strftime('%d.%m.%Y')} по {end_date.strftime('%d.%m.%Y')}:**\n\nЗапланированных задач, событий или напоминаний не найдено!"
+                return f"🌴 **Привет! С {start_date.strftime('%d.%m.%Y')} по {end_date.strftime('%d.%m.%Y')} планов пока нет.**\nВсё свободно!"
 
         return header_str + "\n".join(schedule_lines)
 

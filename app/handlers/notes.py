@@ -11,9 +11,9 @@ router = Router(name="notes")
 async def render_notes_view(user_id: int):
     notes = await notes_service.get_notes(user_id)
     if not notes:
-        return "📝 **Ваши заметки:**\n\nУ вас пока нет сохраненных заметок!", None
+        return "🌴 **Твои сохранённые заметки:**\n\nУ тебя пока нет сохранённых заметок! Напиши мне «Запиши заметку ...» и я её сохраню ✨", None
 
-    lines = ["📝 **Ваши заметки:**\n"]
+    lines = ["🌴 **Твои сохранённые заметки:**\n"]
     buttons = []
 
     for idx, note in enumerate(notes, 1):
