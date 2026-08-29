@@ -22,6 +22,6 @@ RUN mkdir -p /app/data /app/credentials
 
 # Copy application source code and template
 COPY app/ /app/app/
-COPY "To-Do template.md" /app/
+COPY ["To-Do template.md", "/app/"]
 
 CMD ["python", "-m", "app.main"]
