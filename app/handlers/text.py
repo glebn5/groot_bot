@@ -213,6 +213,14 @@ async def execute_action_pipeline(bot: Bot, chat_id: int, action: ParsedAction) 
     return response_text
 
 
+async def safe_answer_markdown(message: Message, text: str, reply_markup=None):
+    try:
+        await message.answer(text, reply_markup=reply_markup, parse_mode="Markdown")
+    except Exception as e:
+        logger.warning(f"Failed to send with Markdown parse_mode: {e}. Falling back to plain text.")
+        await message.answer(text, reply_markup=reply_markup, parse_mode=None)
+
+
 @router.message(F.text & ~F.text.startswith("/"))
 async def handle_text_message(message: Message, bot: Bot):
     await bot.send_chat_action(chat_id=message.chat.id, action=ChatAction.TYPING)
@@ -220,7 +228,7 @@ async def handle_text_message(message: Message, bot: Bot):
         ctx_date = context_service.get_last_date(message.chat.id)
         parsed_action = await llm_service.parse_user_request(text_content=message.text, context_date=ctx_date)
         reply = await execute_action_pipeline(bot, message.chat.id, parsed_action)
-        await message.answer(reply, parse_mode="Markdown")
+        await safe_answer_markdown(message, reply)
     except Exception as e:
         logger.error(f"Error handling text message: {e}", exc_info=True)
-        await message.answer(f"❌ Произошла ошибка при обработке запроса: {str(e)}")
+        await message.answer(f"❌ Произошла ошибка при обработке запроса: {str(e)}", parse_mode=None)

@@ -5,7 +5,7 @@ from aiogram.enums import ChatAction
 from aiogram.types import Message
 
 from app.services.llm import llm_service
-from app.handlers.text import execute_action_pipeline
+from app.handlers.text import execute_action_pipeline, safe_answer_markdown
 
 logger = logging.getLogger(__name__)
 router = Router(name="media")
@@ -51,8 +51,8 @@ async def handle_media_message(message: Message, bot: Bot):
         )
         
         reply = await execute_action_pipeline(bot, message.chat.id, parsed_action)
-        await message.answer(reply, parse_mode="Markdown")
+        await safe_answer_markdown(message, reply)
 
     except Exception as e:
         logger.error(f"Error handling media vision message: {e}", exc_info=True)
-        await message.answer(f"❌ Ошибка распознавания изображения: {str(e)}")
+        await message.answer(f"❌ Ошибка распознавания изображения: {str(e)}", parse_mode=None)

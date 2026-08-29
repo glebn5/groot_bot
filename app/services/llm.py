@@ -80,8 +80,15 @@ SYSTEM_PROMPT = """Ты — интеллектуальный ассистент 
 class LLMService:
     def __init__(self):
         self.groq_client = AsyncGroq(api_key=settings.GROQ_API_KEY)
-        self.text_model = "llama-3.3-70b-versatile"
-        self.vision_model = "llama-3.2-11b-vision-preview"
+        self.text_models = [
+            "openai/gpt-oss-120b",
+            "openai/gpt-oss-20b",
+            "qwen/qwen3.6-27b",
+            "groq/compound"
+        ]
+        self.vision_models = [
+            "openai/gpt-oss-120b"
+        ]
         
         if self._is_valid_gemini_key():
             genai.configure(api_key=settings.GEMINI_API_KEY)
@@ -123,76 +130,82 @@ class LLMService:
         return self._clean_and_parse_json(raw_json_str)
 
     async def _process_text(self, sys_prompt: str, user_text: str) -> str:
-        try:
-            logger.info("Sending text prompt to Groq LLM...")
-            response = await self.groq_client.chat.completions.create(
-                model=self.text_model,
-                messages=[
-                    {"role": "system", "content": sys_prompt},
-                    {"role": "user", "content": user_text}
-                ],
-                temperature=0.2,
-                response_format={"type": "json_object"}
-            )
-            return response.choices[0].message.content or ""
-        except Exception as e:
-            logger.warning(f"Groq LLM text call failed: {e}. Trying fallback if available...", exc_info=True)
-            if self._is_valid_gemini_key():
-                try:
-                    return await self._process_gemini_text(sys_prompt, user_text)
-                except Exception as gemini_err:
-                    logger.error(f"Gemini fallback failed: {gemini_err}")
-            raise e
+        last_error = None
+        for model in self.text_models:
+            try:
+                logger.info(f"Sending text prompt to Groq model: {model}...")
+                response = await self.groq_client.chat.completions.create(
+                    model=model,
+                    messages=[
+                        {"role": "system", "content": sys_prompt},
+                        {"role": "user", "content": user_text}
+                    ],
+                    temperature=0.2,
+                    response_format={"type": "json_object"}
+                )
+                return response.choices[0].message.content or ""
+            except Exception as e:
+                logger.warning(f"Groq text model '{model}' failed: {e}. Trying next model...")
+                last_error = e
+
+        if self._is_valid_gemini_key():
+            try:
+                logger.info("All Groq text models failed. Trying Gemini fallback...")
+                return await self._process_gemini_text(sys_prompt, user_text)
+            except Exception as gemini_err:
+                logger.error(f"Gemini fallback failed: {gemini_err}")
+
+        if last_error:
+            raise last_error
+        raise RuntimeError("Failed to process text request with LLM.")
 
     async def _process_vision(self, sys_prompt: str, user_text: str, image_bytes: bytes, mime_type: str) -> str:
-        # Try Groq Vision model first
-        try:
-            logger.info("Sending vision prompt to Groq Vision LLM...")
-            base64_image = base64.b64encode(image_bytes).decode('utf-8')
-            image_url = f"data:{mime_type};base64,{base64_image}"
-            
-            prompt_msg = user_text if user_text else "Распознай текст/информацию на этом фото и извлеки задачи, даты, время и события."
-            
-            response = await self.groq_client.chat.completions.create(
-                model=self.vision_model,
-                messages=[
-                    {"role": "system", "content": sys_prompt},
-                    {
-                        "role": "user",
-                        "content": [
-                            {"type": "text", "text": prompt_msg},
-                            {"type": "image_url", "image_url": {"url": image_url}}
-                        ]
-                    }
-                ],
-                temperature=0.2,
-                response_format={"type": "json_object"}
-            )
-            return response.choices[0].message.content or ""
-        except Exception as e:
-            logger.warning(f"Groq Vision failed: {e}. Falling back to Gemini Flash if configured...", exc_info=True)
-            if self._is_valid_gemini_key():
-                try:
-                    return await self._process_gemini_vision(sys_prompt, user_text, image_bytes, mime_type)
-                except Exception as gemini_err:
-                    logger.error(f"Gemini Vision fallback failed: {gemini_err}")
-            raise e
+        if self._is_valid_gemini_key():
+            try:
+                logger.info("Processing image with Gemini Vision...")
+                return await self._process_gemini_vision(sys_prompt, user_text, image_bytes, mime_type)
+            except Exception as gemini_err:
+                logger.error(f"Gemini Vision failed: {gemini_err}")
+
+        # If user provided a caption text with the image, process the caption
+        if user_text and user_text.strip():
+            return await self._process_text(sys_prompt, user_text)
+
+        # Inform user how to enable image scanning
+        fallback_json = {
+            "is_actionable": False,
+            "is_schedule_query": False,
+            "is_note_save": False,
+            "is_task_add": False,
+            "confirmation_text": "🌴 Я получил фото! Чтобы я мог автоматически считывать с него текст (талоны к врачу, чеки, справки), укажите бесплатный **Gemini API Key** через команду `/settings`. Либо отправьте фото вместе с текстом-описанием!"
+        }
+        return json.dumps(fallback_json, ensure_ascii=False)
 
     async def _process_gemini_text(self, sys_prompt: str, user_text: str) -> str:
-        model = genai.GenerativeModel("gemini-1.5-flash")
         prompt = f"{sys_prompt}\n\nСообщение пользователя:\n{user_text}"
-        response = await model.generate_content_async(prompt)
-        return response.text or ""
+        for model_name in ["gemini-3.6-flash", "gemini-flash-latest", "gemini-3.7-flash"]:
+            try:
+                model = genai.GenerativeModel(model_name)
+                response = await model.generate_content_async(prompt)
+                return response.text or ""
+            except Exception as e:
+                logger.warning(f"Gemini text model '{model_name}' failed: {e}. Trying next...")
+        raise RuntimeError("All Gemini text models failed.")
 
     async def _process_gemini_vision(self, sys_prompt: str, user_text: str, image_bytes: bytes, mime_type: str) -> str:
-        model = genai.GenerativeModel("gemini-1.5-flash")
-        prompt = f"{sys_prompt}\n\nСообщение пользователя:\n{user_text or 'Распознай задачи/события с изображения.'}"
+        prompt = f"{sys_prompt}\n\nПользователь прислал фото/документ (талон к врачу, чек, расписание или билет). Внимательно распознай ВСЕ записи, дату, время, имя врача/события с изображения и извлеки задачи/события календаря.\nПодпись пользователя: {user_text or 'без подписи'}"
         contents = [
             prompt,
             {"mime_type": mime_type, "data": image_bytes}
         ]
-        response = await model.generate_content_async(contents)
-        return response.text or ""
+        for model_name in ["gemini-3.6-flash", "gemini-flash-latest", "gemini-3.7-flash"]:
+            try:
+                model = genai.GenerativeModel(model_name)
+                response = await model.generate_content_async(contents)
+                return response.text or ""
+            except Exception as e:
+                logger.warning(f"Gemini vision model '{model_name}' failed: {e}. Trying next...")
+        raise RuntimeError("All Gemini vision models failed.")
 
     def _clean_and_parse_json(self, raw_str: str) -> ParsedAction:
         cleaned = raw_str.strip()

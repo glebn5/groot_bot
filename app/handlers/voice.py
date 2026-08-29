@@ -8,7 +8,7 @@ from aiogram.types import Message
 from app.services.stt import stt_service
 from app.services.llm import llm_service
 from app.services.context import context_service
-from app.handlers.text import execute_action_pipeline
+from app.handlers.text import execute_action_pipeline, safe_answer_markdown
 
 logger = logging.getLogger(__name__)
 router = Router(name="voice")
@@ -37,7 +37,7 @@ async def handle_voice_message(message: Message, bot: Bot):
         transcribed_text = await stt_service.transcribe_audio_file(tmp_path)
         
         # Inform user of transcribed text
-        await message.answer(f"🎙 **Расшифровка голоса:**\n\n_{transcribed_text}_", parse_mode="Markdown")
+        await safe_answer_markdown(message, f"🎙 **Расшифровка голоса:**\n\n{transcribed_text}")
 
         # Process request with LLM & execute pipeline
         await bot.send_chat_action(chat_id=message.chat.id, action=ChatAction.TYPING)
@@ -45,11 +45,11 @@ async def handle_voice_message(message: Message, bot: Bot):
         parsed_action = await llm_service.parse_user_request(text_content=transcribed_text, context_date=ctx_date)
         reply = await execute_action_pipeline(bot, message.chat.id, parsed_action)
         
-        await message.answer(reply, parse_mode="Markdown")
+        await safe_answer_markdown(message, reply)
 
     except Exception as e:
         logger.error(f"Error handling voice message: {e}", exc_info=True)
-        await message.answer(f"❌ Ошибка обработки голосового сообщения: {str(e)}")
+        await message.answer(f"❌ Ошибка обработки голосового сообщения: {str(e)}", parse_mode=None)
     finally:
         if tmp_path and os.path.exists(tmp_path):
             os.remove(tmp_path)
