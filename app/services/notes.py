@@ -4,6 +4,7 @@ import logging
 from datetime import datetime
 from typing import List, Dict, Any
 from app.config import settings
+from app.utils.timezone import get_now
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +39,7 @@ class NotesService:
         """
         Saves a new note for user_id and returns the created note ID.
         """
-        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        now_str = get_now().strftime("%Y-%m-%d %H:%M:%S")
         try:
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()

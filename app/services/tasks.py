@@ -4,6 +4,7 @@ import logging
 from datetime import date, datetime
 from typing import List, Dict, Any, Optional
 from app.config import settings
+from app.utils.timezone import get_now, get_today
 
 logger = logging.getLogger(__name__)
 
@@ -41,10 +42,10 @@ class TasksService:
         Adds a new daily task for user_id on target_date.
         """
         if not target_date:
-            target_date = date.today()
+            target_date = get_today()
 
         date_str = target_date.strftime("%Y-%m-%d")
-        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        now_str = get_now().strftime("%Y-%m-%d %H:%M:%S")
 
         try:
             with sqlite3.connect(self.db_path) as conn:

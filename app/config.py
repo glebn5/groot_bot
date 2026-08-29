@@ -21,6 +21,7 @@ class Settings(BaseSettings):
     
     DATABASE_PATH: str = "data/scheduler.db"
     TEMPLATE_PATH: str = "To-Do template.md"
+    TIMEZONE: str = "Europe/Moscow"
 
     model_config = SettingsConfigDict(
         env_file=".env",

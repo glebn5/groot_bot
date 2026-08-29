@@ -6,6 +6,7 @@ from datetime import date
 from typing import Optional
 from webdav3.client import Client
 from app.config import settings
+from app.utils.timezone import get_today
 
 logger = logging.getLogger(__name__)
 
@@ -92,7 +93,7 @@ class ObsidianService:
             return None
 
         if not target_date:
-            target_date = date.today()
+            target_date = get_today()
 
         remote_path = self._get_remote_daily_path(target_date)
         logger.info(f"Targeting Obsidian WebDAV path: {remote_path}")

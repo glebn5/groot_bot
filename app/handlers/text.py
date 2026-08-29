@@ -13,6 +13,7 @@ from app.services.notes import notes_service
 from app.services.tasks import tasks_service
 from app.services.context import context_service
 from app.handlers.notes import render_notes_view
+from app.utils.timezone import get_today
 
 logger = logging.getLogger(__name__)
 router = Router(name="text")
@@ -137,7 +138,7 @@ async def execute_action_pipeline(bot: Bot, chat_id: int, action: ParsedAction) 
     # 0. Save Task if requested for a date
     if action.is_task_add and action.task_text:
         try:
-            t_date = action.task_date or date.today()
+            t_date = action.task_date or get_today()
             await tasks_service.add_task(user_id=chat_id, task_text=action.task_text, target_date=t_date)
             d_str = t_date.strftime("%d.%m.%Y")
             status_notes.append(f"📋 Задача «{action.task_text}» сохранена на {d_str}!")
@@ -169,7 +170,7 @@ async def execute_action_pipeline(bot: Bot, chat_id: int, action: ParsedAction) 
                 logger.error(f"Obsidian sync failed: {e}")
         else:
             try:
-                t_date = action.obsidian_entry.entry_date or date.today()
+                t_date = action.obsidian_entry.entry_date or get_today()
                 await tasks_service.add_task(user_id=chat_id, task_text=action.obsidian_entry.task_text, target_date=t_date)
                 d_str = t_date.strftime("%d.%m.%Y")
                 status_notes.append(f"📋 Задача «{action.obsidian_entry.task_text}» добавлена на {d_str}")

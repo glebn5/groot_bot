@@ -6,6 +6,7 @@ from aiogram.enums import ParseMode
 from aiogram.client.default import DefaultBotProperties
 
 from app.config import settings
+from app.utils.timezone import init_timezone
 from app.middleware.auth import AuthMiddleware
 from app.services.scheduler import scheduler_service
 from app.handlers import common, text, voice, media, settings as settings_handler, notes as notes_handler
@@ -20,6 +21,7 @@ logger = logging.getLogger("app.main")
 
 
 async def main():
+    init_timezone()
     logger.info("Initializing Groot's Telegram Bot...")
 
     bot = Bot(

@@ -7,6 +7,7 @@ from groq import AsyncGroq
 import google.generativeai as genai
 from app.config import settings
 from app.models.schemas import ParsedAction
+from app.utils.timezone import get_now
 
 logger = logging.getLogger(__name__)
 
@@ -107,7 +108,7 @@ class LLMService:
         """
         Parse user request (text or image) into structured ParsedAction using Groq or Gemini API.
         """
-        now = datetime.now()
+        now = get_now()
         current_datetime_str = now.strftime("%Y-%m-%dT%H:%M:%S")
         if context_date:
             current_datetime_str += f" (Недавно обсуждавшаяся дата в диалоге: {context_date.strftime('%Y-%m-%d')})"

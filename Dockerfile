@@ -4,13 +4,16 @@ FROM python:3.11-slim
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 
+ENV TZ=Europe/Moscow
+
 WORKDIR /app
 
-# Install system dependencies (including ffmpeg for voice audio processing)
+# Install system dependencies (including ffmpeg for voice audio processing and tzdata for timezone support)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     ca-certificates \
     curl \
+    tzdata \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements and install Python dependencies

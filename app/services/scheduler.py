@@ -7,6 +7,7 @@ from aiogram.client.default import DefaultBotProperties
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
 from app.config import settings
+from app.utils.timezone import get_now, get_tz
 
 logger = logging.getLogger(__name__)
 
@@ -41,12 +42,12 @@ class SchedulerService:
         jobstores = {
             'default': SQLAlchemyJobStore(url=f"sqlite:///{db_path}")
         }
-        self.scheduler = AsyncIOScheduler(jobstores=jobstores)
+        self.scheduler = AsyncIOScheduler(jobstores=jobstores, timezone=get_tz())
 
     def start(self):
         if not self.scheduler.running:
             self.scheduler.start()
-            logger.info("APScheduler initialized and started successfully.")
+            logger.info(f"APScheduler initialized and started successfully with timezone {settings.TIMEZONE}.")
 
     def stop(self):
         if self.scheduler.running:
@@ -57,7 +58,13 @@ class SchedulerService:
         """
         Schedules a one-off reminder notification to be sent to chat_id at trigger_at.
         """
-        now = datetime.now()
+        tz = get_tz()
+        if trigger_at.tzinfo is None:
+            trigger_at = trigger_at.replace(tzinfo=tz)
+        else:
+            trigger_at = trigger_at.astimezone(tz)
+
+        now = get_now()
         if trigger_at <= now:
             logger.warning(f"Reminder trigger time {trigger_at} is in the past. Adjusting to execute immediately.")
             trigger_at = now

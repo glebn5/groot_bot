@@ -1,6 +1,7 @@
 import logging
 from datetime import date, datetime, timedelta
 from typing import Dict, Any, Optional
+from app.utils.timezone import get_now
 
 logger = logging.getLogger(__name__)
 
@@ -13,7 +14,7 @@ class UserContext:
     def set_last_date(self, user_id: int, target_date: date):
         self._storage[user_id] = {
             "last_date": target_date,
-            "updated_at": datetime.now()
+            "updated_at": get_now()
         }
         logger.info(f"Updated context for user {user_id}: last_date={target_date}")
 
@@ -23,7 +24,7 @@ class UserContext:
             return None
 
         # Check if context is fresh (within max_age_seconds)
-        if datetime.now() - data["updated_at"] > timedelta(seconds=max_age_seconds):
+        if get_now() - data["updated_at"] > timedelta(seconds=max_age_seconds):
             logger.info(f"Context for user {user_id} expired.")
             return None
 

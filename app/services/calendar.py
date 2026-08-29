@@ -5,6 +5,7 @@ from typing import Optional
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from app.config import settings
+from app.utils.timezone import get_tz
 
 logger = logging.getLogger(__name__)
 
@@ -55,11 +56,11 @@ class CalendarService:
             'description': description or '',
             'start': {
                 'dateTime': start_time.isoformat(),
-                'timeZone': 'UTC',
+                'timeZone': settings.TIMEZONE,
             },
             'end': {
                 'dateTime': end_time.isoformat(),
-                'timeZone': 'UTC',
+                'timeZone': settings.TIMEZONE,
             },
         }
 
@@ -88,8 +89,9 @@ class CalendarService:
         if not self.service:
             return []
         try:
-            start_of_day = datetime.combine(start_date, datetime.min.time()).isoformat() + 'Z'
-            end_of_day = datetime.combine(end_date, datetime.max.time()).isoformat() + 'Z'
+            tz = get_tz()
+            start_of_day = datetime.combine(start_date, datetime.min.time(), tzinfo=tz).isoformat()
+            end_of_day = datetime.combine(end_date, datetime.max.time(), tzinfo=tz).isoformat()
             events_result = self.service.events().list(
                 calendarId=settings.GOOGLE_CALENDAR_ID,
                 timeMin=start_of_day,
