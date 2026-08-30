@@ -13,7 +13,7 @@ from app.services.notes import notes_service
 from app.services.tasks import tasks_service
 from app.services.context import context_service
 from app.handlers.notes import render_notes_view
-from app.utils.timezone import get_today
+from app.utils.timezone import get_today, get_now, get_tz
 
 logger = logging.getLogger(__name__)
 router = Router(name="text")
@@ -194,14 +194,27 @@ async def execute_action_pipeline(bot: Bot, chat_id: int, action: ParsedAction) 
 
     # 3. Schedule Telegram reminders
     if action.reminders:
+        now = get_now()
+        tz = get_tz()
         for r in action.reminders:
             try:
+                trigger_dt = r.trigger_at
+                if trigger_dt.tzinfo is None:
+                    trigger_dt = trigger_dt.replace(tzinfo=tz)
+
+                # If reminder time is in the past, do not schedule it and inform user
+                if trigger_dt <= now:
+                    time_str = trigger_dt.strftime("%d.%m.%Y в %H:%M")
+                    logger.info(f"Skipping reminder '{r.message}' for chat {chat_id} because trigger_at ({time_str}) is in the past.")
+                    status_notes.append(f"⚠️ Напоминание на {time_str} не запланировано (дата уже прошла)")
+                    continue
+
                 scheduler_service.schedule_reminder(
                     chat_id=chat_id,
-                    trigger_at=r.trigger_at,
+                    trigger_at=trigger_dt,
                     message=r.message
                 )
-                time_str = r.trigger_at.strftime("%d.%m.%Y в %H:%M")
+                time_str = trigger_dt.strftime("%d.%m.%Y в %H:%M")
                 status_notes.append(f"⏰ Запланировано напоминание на {time_str}")
             except Exception as e:
                 logger.error(f"Scheduling reminder failed: {e}")
@@ -224,6 +237,10 @@ async def safe_answer_markdown(message: Message, text: str, reply_markup=None):
 
 @router.message(F.text & ~F.text.startswith("/"))
 async def handle_text_message(message: Message, bot: Bot):
+    user_info = f"user_id={message.from_user.id}"
+    if message.from_user.username:
+        user_info += f" (@{message.from_user.username})"
+    logger.info(f"Received text message from {user_info}: '{message.text}'")
     await bot.send_chat_action(chat_id=message.chat.id, action=ChatAction.TYPING)
     try:
         ctx_date = context_service.get_last_date(message.chat.id)

@@ -35,6 +35,10 @@ async def handle_voice_message(message: Message, bot: Bot):
 
         # Transcribe audio using Groq Whisper API
         transcribed_text = await stt_service.transcribe_audio_file(tmp_path)
+        user_info = f"user_id={message.from_user.id}"
+        if message.from_user.username:
+            user_info += f" (@{message.from_user.username})"
+        logger.info(f"Received voice message from {user_info}, transcribed: '{transcribed_text}'")
         
         # Inform user of transcribed text
         await safe_answer_markdown(message, f"🎙 **Расшифровка голоса:**\n\n{transcribed_text}")
