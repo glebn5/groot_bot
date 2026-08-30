@@ -50,8 +50,8 @@ async def handle_media_message(message: Message, bot: Bot):
             mime_type=mime_type
         )
         
-        reply = await execute_action_pipeline(bot, message.chat.id, parsed_action)
-        await safe_answer_markdown(message, reply)
+        reply_text, reply_markup = await execute_action_pipeline(bot, message.chat.id, parsed_action)
+        await safe_answer_markdown(message, reply_text, reply_markup=reply_markup)
 
     except Exception as e:
         logger.error(f"Error handling media vision message: {e}", exc_info=True)

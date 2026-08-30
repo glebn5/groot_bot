@@ -104,5 +104,23 @@ class CalendarService:
             logger.error(f"Error fetching Google Calendar events for range {start_date} to {end_date}: {e}")
             return []
 
+    async def search_events(self, query: str) -> list:
+        """
+        Searches Google Calendar events matching query string.
+        """
+        if not self.service:
+            return []
+        try:
+            events_result = self.service.events().list(
+                calendarId=settings.GOOGLE_CALENDAR_ID,
+                q=query,
+                singleEvents=True,
+                orderBy='startTime'
+            ).execute()
+            return events_result.get('items', [])
+        except Exception as e:
+            logger.error(f"Error searching Google Calendar events for '{query}': {e}")
+            return []
+
 
 calendar_service = CalendarService()

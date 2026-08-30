@@ -47,9 +47,9 @@ async def handle_voice_message(message: Message, bot: Bot):
         await bot.send_chat_action(chat_id=message.chat.id, action=ChatAction.TYPING)
         ctx_date = context_service.get_last_date(message.chat.id)
         parsed_action = await llm_service.parse_user_request(text_content=transcribed_text, context_date=ctx_date)
-        reply = await execute_action_pipeline(bot, message.chat.id, parsed_action)
+        reply_text, reply_markup = await execute_action_pipeline(bot, message.chat.id, parsed_action)
         
-        await safe_answer_markdown(message, reply)
+        await safe_answer_markdown(message, reply_text, reply_markup=reply_markup)
 
     except Exception as e:
         logger.error(f"Error handling voice message: {e}", exc_info=True)

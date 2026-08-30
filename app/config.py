@@ -6,7 +6,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
     BOT_TOKEN: str
-    ALLOWED_TELEGRAM_USER_IDS: List[int] = []
+    ALLOWED_TELEGRAM_USER_IDS: Union[str, List[int]] = []
     
     GROQ_API_KEY: str
     GEMINI_API_KEY: str = ""
@@ -33,9 +33,18 @@ class Settings(BaseSettings):
     @classmethod
     def parse_user_ids(cls, v: Union[str, List[int], List[str]]) -> List[int]:
         if isinstance(v, str):
-            if not v.strip():
+            v_str = v.strip()
+            if not v_str:
                 return []
-            return [int(uid.strip()) for uid in v.split(",") if uid.strip()]
+            if v_str.startswith("[") and v_str.endswith("]"):
+                import json
+                try:
+                    parsed = json.loads(v_str)
+                    if isinstance(parsed, list):
+                        return [int(uid) for uid in parsed]
+                except Exception:
+                    pass
+            return [int(uid.strip()) for uid in v_str.split(",") if uid.strip()]
         if isinstance(v, list):
             return [int(uid) for uid in v]
         return []

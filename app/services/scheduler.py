@@ -87,24 +87,73 @@ class SchedulerService:
 
     def get_reminders_for_date_range(self, start_date, end_date, chat_id=None) -> list:
         """
-        Returns list of active reminders between start_date and end_date.
+        Returns list of active reminders between start_date and end_date in the configured timezone.
         """
         results = []
         if not self.scheduler:
             return results
+        tz = get_tz()
         try:
             for job in self.scheduler.get_jobs():
-                if job.next_run_time and start_date <= job.next_run_time.date() <= end_date:
-                    if chat_id is None or (job.args and len(job.args) > 0 and job.args[0] == chat_id):
-                        results.append({
-                            "date": job.next_run_time.strftime("%d.%m.%Y"),
-                            "time": job.next_run_time.strftime("%H:%M"),
-                            "message": job.args[1] if len(job.args) > 1 else "Напоминание"
-                        })
+                if job.next_run_time:
+                    run_dt = job.next_run_time.astimezone(tz)
+                    if start_date <= run_dt.date() <= end_date:
+                        if chat_id is None or (job.args and len(job.args) > 0 and job.args[0] == chat_id):
+                            results.append({
+                                "id": str(job.id),
+                                "date": run_dt.strftime("%d.%m.%Y"),
+                                "time": run_dt.strftime("%H:%M"),
+                                "message": job.args[1] if len(job.args) > 1 else "Напоминание"
+                            })
             results.sort(key=lambda x: (x["date"], x["time"]))
         except Exception as e:
             logger.error(f"Error fetching reminders for range {start_date} to {end_date}: {e}")
         return results
+
+    def remove_reminder(self, job_id: str) -> bool:
+        """
+        Removes a scheduled reminder job by ID.
+        """
+        try:
+            self.scheduler.remove_job(job_id)
+            logger.info(f"Successfully removed reminder job {job_id}")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to remove reminder job {job_id}: {e}")
+            return False
+
+    def search_reminders(self, query: str, chat_id=None) -> list:
+        """
+        Searches active reminders matching query keywords.
+        """
+        results = {}
+        if not self.scheduler:
+            return list(results.values())
+        tz = get_tz()
+        stop_words = {"завтра", "сегодня", "вчера", "когда", "где", "во", "сколько", "напомни", "планы", "на", "для", "что", "есть"}
+        words = [w.lower().strip("?!.,") for w in query.split() if len(w.strip("?!.,")) >= 2 and w.lower().strip("?!.,") not in stop_words]
+        if not words:
+            words = [query.lower().strip("?!.,")]
+
+        try:
+            for job in self.scheduler.get_jobs():
+                if job.next_run_time:
+                    msg = (job.args[1] if len(job.args) > 1 else "").lower()
+                    if any(w in msg for w in words):
+                        if chat_id is None or (job.args and len(job.args) > 0 and job.args[0] == chat_id):
+                            run_dt = job.next_run_time.astimezone(tz)
+                            results[str(job.id)] = {
+                                "id": str(job.id),
+                                "date": run_dt.strftime("%d.%m.%Y"),
+                                "time": run_dt.strftime("%H:%M"),
+                                "message": job.args[1] if len(job.args) > 1 else "Напоминание"
+                            }
+            res_list = list(results.values())
+            res_list.sort(key=lambda x: (x["date"], x["time"]))
+            return res_list
+        except Exception as e:
+            logger.error(f"Error searching reminders for query '{query}': {e}")
+            return []
 
 
 scheduler_service = SchedulerService()

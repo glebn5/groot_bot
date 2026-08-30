@@ -162,6 +162,41 @@ class TasksService:
             logger.error(f"Error completing task #{task_id}: {e}", exc_info=True)
             return False
 
+    async def toggle_task(self, user_id: int, task_id: int) -> bool:
+        """
+        Toggles completion status of a task (0 <-> 1).
+        """
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "UPDATE user_tasks SET is_completed = 1 - is_completed WHERE id = ? AND user_id = ?",
+                    (task_id, user_id)
+                )
+                conn.commit()
+                return cursor.rowcount > 0
+        except Exception as e:
+            logger.error(f"Error toggling task #{task_id}: {e}", exc_info=True)
+            return False
+
+    async def move_task_by_id(self, user_id: int, task_id: int, to_date: date) -> bool:
+        """
+        Moves a task by ID to a new target_date.
+        """
+        to_date_str = to_date.strftime("%Y-%m-%d")
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "UPDATE user_tasks SET target_date = ? WHERE id = ? AND user_id = ?",
+                    (to_date_str, task_id, user_id)
+                )
+                conn.commit()
+                return cursor.rowcount > 0
+        except Exception as e:
+            logger.error(f"Error moving task #{task_id} to {to_date_str}: {e}", exc_info=True)
+            return False
+
     async def delete_task(self, user_id: int, task_id: int) -> bool:
         """
         Deletes a task by ID.
@@ -223,6 +258,37 @@ class TasksService:
         except Exception as e:
             logger.error(f"Error deleting task matching '{query}': {e}", exc_info=True)
             return False
+
+
+    async def search_tasks(self, user_id: int, query: str) -> List[Dict[str, Any]]:
+        """
+        Searches tasks matching query keywords for user_id (Cyrillic case-insensitive).
+        """
+        stop_words = {"завтра", "сегодня", "вчера", "когда", "где", "во", "сколько", "напомни", "планы", "на", "для", "что", "есть"}
+        clean_words = [w.lower().strip("?!.,") for w in query.split() if len(w.strip("?!.,")) >= 2 and w.lower().strip("?!.,") not in stop_words]
+        if not clean_words:
+            clean_words = [query.lower().strip("?!.,")]
+
+        results = {}
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                conn.create_function("lower", 1, lambda s: s.lower() if isinstance(s, str) else s)
+                conn.row_factory = sqlite3.Row
+                cursor = conn.cursor()
+
+                for w in clean_words:
+                    cursor.execute(
+                        "SELECT id, task_text, target_date, is_completed, created_at FROM user_tasks WHERE user_id = ? AND lower(task_text) LIKE ? ORDER BY target_date ASC, id ASC",
+                        (user_id, f"%{w}%")
+                    )
+                    for row in cursor.fetchall():
+                        d = dict(row)
+                        results[d["id"]] = d
+
+                return list(results.values())
+        except Exception as e:
+            logger.error(f"Error searching tasks matching '{query}': {e}", exc_info=True)
+            return []
 
 
 tasks_service = TasksService()
