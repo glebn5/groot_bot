@@ -40,6 +40,7 @@ class ParsedAction(BaseModel):
     move_task_query: Optional[str] = Field(None, description="Keywords of the task to be moved")
     move_from_date: Optional[date] = Field(None, description="Original date of the task if specified (YYYY-MM-DD)")
     move_to_date: Optional[date] = Field(None, description="New target date to move the task to (YYYY-MM-DD)")
+    move_to_time: Optional[str] = Field(None, description="New target time if user asked to change task time (e.g. '12:10')")
     is_task_clear: bool = Field(default=False, description="Whether user wants to delete/clear all tasks (or tasks for a specific date)")
     clear_date: Optional[date] = Field(None, description="Specific date to clear tasks for, or null for all tasks")
     is_task_delete_single: bool = Field(default=False, description="Whether user wants to delete a specific single task")

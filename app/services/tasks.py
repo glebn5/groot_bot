@@ -88,56 +88,86 @@ class TasksService:
             logger.error(f"Error getting tasks for range {start_str} to {end_str}: {e}", exc_info=True)
             return []
 
-    async def move_task(self, user_id: int, query: str, to_date: date, from_date: Optional[date] = None) -> Optional[Dict[str, Any]]:
+    async def move_task(self, user_id: int, query: str, to_date: Optional[date] = None, from_date: Optional[date] = None, new_time: Optional[str] = None) -> Optional[Dict[str, Any]]:
         """
-        Finds a task matching query (and optional from_date) and updates its target_date to to_date.
+        Finds a task matching query (using Cyrillic case-insensitive word matching) and updates target_date/time.
+        Does NOT fall back to random unrelated tasks if query is specified!
         """
-        to_date_str = to_date.strftime("%Y-%m-%d")
         try:
+            import re
             with sqlite3.connect(self.db_path) as conn:
+                conn.create_function("lower", 1, lambda s: s.lower() if isinstance(s, str) else s)
                 conn.row_factory = sqlite3.Row
                 cursor = conn.cursor()
 
-                if from_date:
+                stop_words = {"завтра", "сегодня", "вчера", "перенеси", "перемести", "на", "задачу", "в", "часов", "минут"}
+                clean_words = [w.lower().strip("?!.,—:-") for w in query.split() if len(w.strip("?!.,—:-")) >= 2 and w.lower().strip("?!.,—:-") not in stop_words]
+                
+                row = None
+                if clean_words:
+                    where_clauses = ["user_id = ?"]
+                    params = [user_id]
+                    if from_date:
+                        where_clauses.append("target_date = ?")
+                        params.append(from_date.strftime("%Y-%m-%d"))
+                    
+                    for w in clean_words:
+                        where_clauses.append("lower(task_text) LIKE ?")
+                        params.append(f"%{w}%")
+                    
+                    sql = f"SELECT id, task_text, target_date FROM user_tasks WHERE {' AND '.join(where_clauses)} ORDER BY id DESC LIMIT 1"
+                    cursor.execute(sql, tuple(params))
+                    row = cursor.fetchone()
+
+                if not row and clean_words:
+                    for w in clean_words:
+                        where_clauses = ["user_id = ?", "lower(task_text) LIKE ?"]
+                        params = [user_id, f"%{w}%"]
+                        if from_date:
+                            where_clauses.append("target_date = ?")
+                            params.append(from_date.strftime("%Y-%m-%d"))
+                        sql = f"SELECT id, task_text, target_date FROM user_tasks WHERE {' AND '.join(where_clauses)} ORDER BY id DESC LIMIT 1"
+                        cursor.execute(sql, tuple(params))
+                        row = cursor.fetchone()
+                        if row:
+                            break
+
+                if not row and not clean_words and from_date:
                     from_date_str = from_date.strftime("%Y-%m-%d")
                     cursor.execute(
-                        "SELECT id, task_text, target_date FROM user_tasks WHERE user_id = ? AND target_date = ? AND task_text LIKE ? LIMIT 1",
-                        (user_id, from_date_str, f"%{query.strip()}%")
+                        "SELECT id, task_text, target_date FROM user_tasks WHERE user_id = ? AND target_date = ? ORDER BY id DESC LIMIT 1",
+                        (user_id, from_date_str)
                     )
-                else:
-                    cursor.execute(
-                        "SELECT id, task_text, target_date FROM user_tasks WHERE user_id = ? AND task_text LIKE ? ORDER BY id DESC LIMIT 1",
-                        (user_id, f"%{query.strip()}%")
-                    )
-
-                row = cursor.fetchone()
-                if not row:
-                    # Fallback: search for any task of that user on from_date if query is vague
-                    if from_date:
-                        from_date_str = from_date.strftime("%Y-%m-%d")
-                        cursor.execute(
-                            "SELECT id, task_text, target_date FROM user_tasks WHERE user_id = ? AND target_date = ? ORDER BY id DESC LIMIT 1",
-                            (user_id, from_date_str)
-                        )
-                        row = cursor.fetchone()
+                    row = cursor.fetchone()
 
                 if not row:
                     logger.warning(f"No task found matching query '{query}' for user_id={user_id}")
                     return None
 
                 task_id = row["id"]
-                task_text = row["task_text"]
+                old_task_text = row["task_text"]
                 old_date_str = row["target_date"]
+                to_date_str = to_date.strftime("%Y-%m-%d") if to_date else old_date_str
+
+                new_task_text = old_task_text
+                if new_time:
+                    clean_time = new_time.strip()
+                    time_match = re.search(r'\b([0-1]?\d|2[0-3]):([0-5]\d)\b', old_task_text)
+                    if time_match:
+                        new_task_text = re.sub(r'\b([0-1]?\d|2[0-3]):([0-5]\d)\b', clean_time, old_task_text, count=1)
+                    else:
+                        new_task_text = f"{clean_time} • {old_task_text}"
 
                 cursor.execute(
-                    "UPDATE user_tasks SET target_date = ? WHERE id = ?",
-                    (to_date_str, task_id)
+                    "UPDATE user_tasks SET target_date = ?, task_text = ? WHERE id = ?",
+                    (to_date_str, new_task_text, task_id)
                 )
                 conn.commit()
-                logger.info(f"Moved task #{task_id} ('{task_text}') from {old_date_str} to {to_date_str}")
+                logger.info(f"Moved task #{task_id} ('{old_task_text}' -> '{new_task_text}') from {old_date_str} to {to_date_str}")
                 return {
                     "id": task_id,
-                    "task_text": task_text,
+                    "task_text": new_task_text,
+                    "old_task_text": old_task_text,
                     "old_date": old_date_str,
                     "new_date": to_date_str
                 }

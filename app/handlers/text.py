@@ -217,6 +217,7 @@ async def render_reminder_management_view(chat_id: int, target_date: date) -> Tu
         lines.append(f"{idx}. ⏰ {formatted_item}")
 
         buttons.append([
+            InlineKeyboardButton(text=f"✏️ Изменить #{idx}", callback_data=f"edit_rem:{job_id}:{d_str}"),
             InlineKeyboardButton(text=f"🗑 Удалить #{idx}", callback_data=f"del_rem:{job_id}:{d_str}")
         ])
 
@@ -280,18 +281,44 @@ async def execute_action_pipeline(bot: Bot, chat_id: int, action: ParsedAction) 
 
         return "\n".join(lines).strip(), None
 
-    # 0. Handle Task Rescheduling/Moving ("перемести задачу на 28 число")
-    if action.is_task_move and action.move_to_date:
+    # 0. Handle Task Rescheduling/Moving ("перемести задачу на 28 число" / "перенеси на 12:10")
+    if action.is_task_move:
         moved = await tasks_service.move_task(
             user_id=chat_id,
             query=action.move_task_query or "",
             to_date=action.move_to_date,
-            from_date=action.move_from_date
+            from_date=action.move_from_date,
+            new_time=action.move_to_time
         )
         if moved:
             old_str = datetime.strptime(moved['old_date'], "%Y-%m-%d").strftime("%d.%m.%Y")
             new_str = datetime.strptime(moved['new_date'], "%Y-%m-%d").strftime("%d.%m.%Y")
-            return f"🌴 **Готово!** Перенёс задачу **«{moved['task_text']}»** с {old_str} на {new_str} ✨", None
+            if old_str == new_str and action.move_to_time:
+                return f"🌴 **Готово!** Время задачи **«{moved['task_text']}»** изменено на **{action.move_to_time}** ✨", None
+            else:
+                time_info = f" (время: {action.move_to_time})" if action.move_to_time else ""
+                return f"🌴 **Готово!** Перенёс задачу **«{moved['task_text']}»** с {old_str} на {new_str}{time_info} ✨", None
+        else:
+            # Fallback: check if query matches a scheduled reminder in APScheduler
+            found_rems = scheduler_service.search_reminders(action.move_task_query or "", chat_id=chat_id)
+            if found_rems:
+                rem_job = found_rems[0]
+                new_trigger_dt = None
+                target_date = action.move_to_date or action.move_from_date or get_today()
+                if action.move_to_time:
+                    try:
+                        h, m = map(int, action.move_to_time.split(":"))
+                        new_trigger_dt = datetime.combine(target_date, datetime.min.time().replace(hour=h, minute=m), tzinfo=get_tz())
+                    except Exception:
+                        pass
+                
+                updated = scheduler_service.update_reminder(rem_job["id"], new_trigger_at=new_trigger_dt)
+                if updated:
+                    t_str = action.move_to_time or rem_job['time']
+                    return f"🌴 **Готово!** Время напоминания **«{rem_job['message']}»** изменено на **{t_str}** ✨", None
+
+            q_name = action.move_task_query or "указанную"
+            return f"⚠️ Задача или напоминание по запросу «{q_name}» не найдена.", None
 
     # 0. Handle Task Clearing ("убери все задачи", "очисти задачи")
     if action.is_task_clear:
@@ -497,6 +524,30 @@ async def process_move_task_next(callback: CallbackQuery):
     text, reply_markup = await render_task_management_view(callback.from_user.id, target_date)
     await safe_edit_markdown(callback.message, text, reply_markup=reply_markup)
     await callback.answer(f"Задача перенесена на {next_date.strftime('%d.%m.%Y')} 🌴")
+
+
+@router.callback_query(F.data.startswith("edit_rem:"))
+async def process_edit_reminder(callback: CallbackQuery):
+    _, job_id, date_str = callback.data.split(":")
+    target_date = datetime.strptime(date_str, "%Y-%m-%d").date()
+    reminders = scheduler_service.get_reminders_for_date(target_date, chat_id=callback.from_user.id)
+    rem = next((r for r in reminders if r["id"] == job_id), None)
+    
+    if not rem:
+        await callback.answer("⚠️ Напоминание не найдено или уже удалено.", show_alert=True)
+        return
+
+    text = (
+        f"✏️ **Редактирование напоминания:**\n\n"
+        f"Текущее: ⏰ **{rem['time']} — {rem['message']}** (дата: {rem['date']})\n\n"
+        f"Вы можете написать прямо в чат другое время или текст, например:\n"
+        f"`перенеси {rem['message']} на 15:00` или `измени время {rem['time']} на 16:30`!"
+    )
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔙 Назад к напоминаниям", callback_data=f"mng_rems:{date_str}")]
+    ])
+    await safe_edit_markdown(callback.message, text, reply_markup=keyboard)
+    await callback.answer()
 
 
 @router.callback_query(F.data.startswith("del_rem:"))

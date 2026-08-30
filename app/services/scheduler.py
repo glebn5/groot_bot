@@ -1,5 +1,6 @@
 import os
 import logging
+from typing import Optional, List, Dict, Any
 from datetime import datetime
 from aiogram import Bot
 from aiogram.enums import ParseMode
@@ -120,6 +121,38 @@ class SchedulerService:
             return True
         except Exception as e:
             logger.error(f"Failed to remove reminder job {job_id}: {e}")
+            return False
+
+    def update_reminder(self, job_id: str, new_trigger_at: Optional[datetime] = None, new_message: Optional[str] = None) -> bool:
+        """
+        Updates an existing reminder job's trigger time and/or message.
+        """
+        try:
+            job = self.scheduler.get_job(job_id)
+            if not job:
+                return False
+
+            tz = get_tz()
+            kwargs = {}
+            if new_trigger_at:
+                if new_trigger_at.tzinfo is None:
+                    new_trigger_at = new_trigger_at.replace(tzinfo=tz)
+                else:
+                    new_trigger_at = new_trigger_at.astimezone(tz)
+                kwargs['next_run_time'] = new_trigger_at
+
+            new_args = list(job.args)
+            if new_message and len(new_args) > 1:
+                new_args[1] = new_message
+                kwargs['args'] = new_args
+
+            if kwargs:
+                self.scheduler.modify_job(job_id, **kwargs)
+                logger.info(f"Updated reminder job {job_id} with kwargs: {kwargs}")
+                return True
+            return False
+        except Exception as e:
+            logger.error(f"Failed to update reminder job {job_id}: {e}")
             return False
 
     def search_reminders(self, query: str, chat_id=None) -> list:

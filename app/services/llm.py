@@ -199,18 +199,19 @@ class LLMService:
                                 if adjusted_dt > now and adjusted_dt.date() == today_date:
                                     r.trigger_at = adjusted_dt
 
-            if action.event_start:
-                action.event_start = ensure_aware(action.event_start)
-                if action.event_end:
-                    action.event_end = ensure_aware(action.event_end)
-                if action.event_start.date() == today_date and action.event_start <= now:
-                    if action.event_start.hour < 12:
-                        adjusted_start = action.event_start + timedelta(hours=12)
-                        if adjusted_start > now and adjusted_start.date() == today_date:
-                            if action.event_end:
-                                duration = action.event_end - action.event_start
-                                action.event_end = adjusted_start + duration
-                            action.event_start = adjusted_start
+        # --- TASK RESCHEDULING / TIME CHANGE DETECTION ---
+        time_resched_match = re.search(r'(?:перенеси|перемести|поменяй|поставь)\s+(?:время\s+)?(?:на\s+)?([0-1]?\d|2[0-3])\s*:\s*([0-5]\d)', lower_text)
+        if time_resched_match:
+            action.is_task_move = True
+            h = int(time_resched_match.group(1))
+            m = time_resched_match.group(2)
+            action.move_to_time = f"{h:02d}:{m}"
+
+        if action.is_task_move and action.move_task_query:
+            clean_q = re.sub(r'[\-\s]*перенеси\s+на\s+.*$', '', action.move_task_query, flags=re.IGNORECASE).strip()
+            clean_q = re.sub(r'^\d{2}:\d{2}\s*—\s*', '', clean_q).strip()
+            if clean_q:
+                action.move_task_query = clean_q
 
         # --- MULTI-TASK SPLITTING AND CLEANING LOGIC ---
         if action.tasks:
