@@ -263,6 +263,39 @@ class LLMService:
                 action.is_task_add = True
                 action.task_text = None
 
+        # --- AUTO-REMINDER FOR TIMED TASKS ---
+        if (action.is_task_add or action.event_start) and not action.reminders:
+            all_texts = [user_text]
+            if action.task_text:
+                all_texts.append(action.task_text)
+            if action.tasks:
+                all_texts.extend([t.task_text for t in action.tasks if t.task_text])
+
+            for txt in all_texts:
+                time_m = re.search(r'\b(?:в\s+)?([0-1]?\d|2[0-3])\s*[\:\s]\s*([0-5]\d)\b', txt, re.IGNORECASE)
+                if time_m:
+                    h = int(time_m.group(1))
+                    m = int(time_m.group(2))
+                    t_date = action.task_date or today_date
+                    trigger_dt = datetime.combine(t_date, datetime.min.time().replace(hour=h, minute=m), tzinfo=tz)
+
+                    if t_date == today_date and trigger_dt <= now and h < 12:
+                        has_am = any(kw in lower_text for kw in ["утра", "утром", "am", "ам"])
+                        if not has_am:
+                            trigger_dt += timedelta(hours=12)
+
+                    if trigger_dt > now:
+                        clean_msg = re.sub(r'^\s*в\s+\d{1,2}[\:\s]\d{2}\s*', '', txt, flags=re.IGNORECASE).strip()
+                        clean_msg = re.sub(r'^\s*\d{1,2}[\:\s]\d{2}\s*[\—\-\•]?\s*', '', clean_msg).strip()
+                        if clean_msg:
+                            clean_msg = clean_msg[0].upper() + clean_msg[1:]
+                        else:
+                            clean_msg = action.title or "Запланированная задача"
+
+                        action.reminders.append(ReminderItem(trigger_at=trigger_dt, message=clean_msg))
+                        logger.info(f"Auto-created reminder at {trigger_dt} for timed task: '{clean_msg}'")
+                        break
+
         return action
 
     async def parse_user_request(
