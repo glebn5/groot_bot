@@ -55,6 +55,7 @@ async def main():
 
     logger.info("Bot setup completed. Starting long polling...")
     try:
+        await bot.delete_webhook(drop_pending_updates=True)
         await dp.start_polling(bot)
     finally:
         logger.info("Shutting down bot and scheduler...")
