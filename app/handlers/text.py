@@ -1,15 +1,20 @@
 import logging
+import re
 from datetime import date, datetime, timedelta
-from typing import Tuple, Optional, Any
+from typing import Tuple, Optional, Any, List
 from aiogram import Router, Bot, F
 from aiogram.enums import ChatAction
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.filters import Command
 
+from app.config import settings
 from app.models.schemas import ParsedAction
 from app.services.llm import llm_service
 from app.services.obsidian import obsidian_service
 from app.services.calendar import calendar_service
-from app.services.scheduler import scheduler_service
+from app.services.scheduler import scheduler_service, get_reminder_inline_keyboard
 from app.services.notes import notes_service
 from app.services.tasks import tasks_service
 from app.services.context import context_service
@@ -18,6 +23,23 @@ from app.utils.timezone import get_today, get_now, get_tz
 
 logger = logging.getLogger(__name__)
 router = Router(name="text")
+
+
+class SnoozeForm(StatesGroup):
+    waiting_for_relative_time = State()
+    waiting_for_absolute_time = State()
+
+
+class TaskEditForm(StatesGroup):
+    waiting_for_new_text = State()
+
+
+class TaskMoveForm(StatesGroup):
+    waiting_for_date = State()
+
+
+class TaskTimePromptForm(StatesGroup):
+    waiting_for_time = State()
 
 
 def format_reminder_display_text(r_date_str: str, r_time_str: str, message: str) -> str:
@@ -123,6 +145,23 @@ async def render_schedule_view(chat_id: int, start_date: date, end_date: Optiona
     # Sort timed items chronologically by time (HH:MM)
     timed_items.sort(key=lambda x: x[0])
 
+    # Deduplicate items
+    dedup_timed = []
+    seen_timed = set()
+    for t_time, icon, text in timed_items:
+        key = (t_time, text.lower())
+        if key not in seen_timed:
+            seen_timed.add(key)
+            dedup_timed.append((t_time, icon, text))
+
+    dedup_untimed = []
+    seen_untimed = set()
+    for icon, text in untimed_items:
+        key = text.lower()
+        if key not in seen_untimed and key not in [t[2].lower() for t in dedup_timed]:
+            seen_untimed.add(key)
+            dedup_untimed.append((icon, text))
+
     days_acc = ["понедельник", "вторник", "среду", "четверг", "пятницу", "субботу", "воскресенье"]
     if start_date == end_date:
         day_str = days_acc[start_date.weekday()]
@@ -131,21 +170,28 @@ async def render_schedule_view(chat_id: int, start_date: date, end_date: Optiona
         header = f"🌴 **Планы с {start_date.strftime('%d.%m')} по {end_date.strftime('%d.%m')}:**\n"
 
     lines = []
-    if timed_items:
-        for t_time, icon, text in timed_items:
+    if dedup_timed:
+        lines.append("⏰ **По времени:**")
+        for t_time, icon, text in dedup_timed:
             lines.append(f"{icon} **{t_time}** • {text}")
 
-    if untimed_items:
+    if dedup_untimed:
         if lines:
             lines.append("")
         lines.append("📌 **Без точного времени:**")
-        for icon, text in untimed_items:
+        for icon, text in dedup_untimed:
             lines.append(f"{icon} {text}")
 
     d_str = start_date.strftime("%Y-%m-%d")
+    task_count = len(local_tasks)
+    rem_count = len(reminders)
+
+    task_btn_text = f"📋 Все задачи на день ({task_count})" if task_count > 0 else "📋 Задачи на день"
+    rem_btn_text = f"⏰ Напоминания по времени ({rem_count})" if rem_count > 0 else "⏰ Задачи по времени"
+
     buttons = [
-        [InlineKeyboardButton(text="📋 Задачи на день", callback_data=f"mng_tasks:{d_str}")],
-        [InlineKeyboardButton(text="⏰ Задачи по времени", callback_data=f"mng_rems:{d_str}")]
+        [InlineKeyboardButton(text=task_btn_text, callback_data=f"mng_tasks:{d_str}")],
+        [InlineKeyboardButton(text=rem_btn_text, callback_data=f"mng_rems:{d_str}")]
     ]
     keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
 
@@ -159,7 +205,10 @@ async def render_schedule_view(chat_id: int, start_date: date, end_date: Optiona
     return header + "\n" + "\n".join(lines), keyboard
 
 
-async def render_task_management_view(chat_id: int, target_date: date) -> Tuple[str, InlineKeyboardMarkup]:
+PAGE_SIZE = 10
+
+
+async def render_task_management_view(chat_id: int, target_date: date, page: int = 1) -> Tuple[str, InlineKeyboardMarkup]:
     date_formatted = target_date.strftime("%d.%m.%Y")
     d_str = target_date.strftime("%Y-%m-%d")
     local_tasks = await tasks_service.get_tasks(chat_id, target_date)
@@ -171,27 +220,87 @@ async def render_task_management_view(chat_id: int, target_date: date) -> Tuple[
         ])
         return text, keyboard
 
+    total_tasks = len(local_tasks)
+    total_pages = max(1, (total_tasks + PAGE_SIZE - 1) // PAGE_SIZE)
+    page = max(1, min(page, total_pages))
+
+    start_idx = (page - 1) * PAGE_SIZE
+    end_idx = min(start_idx + PAGE_SIZE, total_tasks)
+    page_tasks = local_tasks[start_idx:end_idx]
+
     lines = [f"📋 **Управление задачами на {date_formatted}:**\n"]
-    buttons = []
 
     for idx, t in enumerate(local_tasks, 1):
-        task_id = t["id"]
         status_icon = "✅" if t.get("is_completed") else "▫️"
-        task_text = t["task_text"]
-        lines.append(f"{idx}. {status_icon} **{task_text}**")
+        lines.append(f"{idx}. {status_icon} **{t['task_text']}**")
 
-        toggle_label = "↩️ Отменить" if t.get("is_completed") else "✅ Выполнить"
-        buttons.append([
-            InlineKeyboardButton(text=f"{toggle_label} #{idx}", callback_data=f"toggle_t:{task_id}:{d_str}"),
-            InlineKeyboardButton(text=f"🗑 Удалить #{idx}", callback_data=f"del_t:{task_id}:{d_str}"),
-            InlineKeyboardButton(text=f"⏩ На завтра #{idx}", callback_data=f"move_t_next:{task_id}:{d_str}")
-        ])
+    lines.append("\nНажмите на номер задачи для управления:")
+
+    buttons = []
+    row = []
+    for i, t in enumerate(page_tasks, start=start_idx + 1):
+        task_id = t["id"]
+        row.append(InlineKeyboardButton(text=f" {i} ", callback_data=f"select_t:{task_id}:{d_str}:{page}:{i}"))
+        if len(row) == 5:
+            buttons.append(row)
+            row = []
+    if row:
+        buttons.append(row)
+
+    if total_pages > 1:
+        pag_row = []
+        if page > 1:
+            pag_row.append(InlineKeyboardButton(text="⬅️ Пред.", callback_data=f"t_page:{d_str}:{page - 1}"))
+        pag_row.append(InlineKeyboardButton(text=f"Стр. {page}/{total_pages}", callback_data="noop"))
+        if page < total_pages:
+            pag_row.append(InlineKeyboardButton(text="След. ➡️", callback_data=f"t_page:{d_str}:{page + 1}"))
+        buttons.append(pag_row)
 
     buttons.append([
         InlineKeyboardButton(text="🔙 Назад к расписанию", callback_data=f"mng_back:{d_str}")
     ])
 
     return "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+async def render_task_detail_view(chat_id: int, task_id: int, date_str: str, page: int = 1, idx: int = 1) -> Tuple[str, InlineKeyboardMarkup]:
+    task = await tasks_service.get_task_by_id(chat_id, task_id)
+    target_date = datetime.strptime(date_str, "%Y-%m-%d").date()
+    date_formatted = target_date.strftime("%d.%m.%Y")
+
+    if not task:
+        text = f"⚠️ Задача #{idx} не найдена или была удалена."
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔙 Назад к списку задач", callback_data=f"t_list:{date_str}:{page}")]
+        ])
+        return text, keyboard
+
+    status_icon = "✅" if task.get("is_completed") else "▫️"
+    status_str = "Выполнена" if task.get("is_completed") else "В процессе"
+    toggle_label = "↩️ Отменить выполнение" if task.get("is_completed") else "✅ Выполнить"
+
+    text = (
+        f"📋 **Управление задачей #{idx}:**\n\n"
+        f"{status_icon} **{task['task_text']}**\n"
+        f"📅 Дата: **{date_formatted}**\n"
+        f"📌 Статус: **{status_str}**"
+    )
+
+    buttons = [
+        [
+            InlineKeyboardButton(text=toggle_label, callback_data=f"toggle_t:{task_id}:{date_str}:{page}:{idx}"),
+            InlineKeyboardButton(text="✏️ Изменить", callback_data=f"edit_t:{task_id}:{date_str}:{page}:{idx}")
+        ],
+        [
+            InlineKeyboardButton(text="⏩ Перенести", callback_data=f"move_t_menu:{task_id}:{date_str}:{page}:{idx}"),
+            InlineKeyboardButton(text="🗑 Удалить", callback_data=f"del_t:{task_id}:{date_str}:{page}:{idx}")
+        ],
+        [
+            InlineKeyboardButton(text="🔙 Назад к списку задач", callback_data=f"t_list:{date_str}:{page}")
+        ]
+    ]
+
+    return text, InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
 async def render_reminder_management_view(chat_id: int, target_date: date) -> Tuple[str, InlineKeyboardMarkup]:
@@ -228,7 +337,22 @@ async def render_reminder_management_view(chat_id: int, target_date: date) -> Tu
     return "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
-async def execute_action_pipeline(bot: Bot, chat_id: int, action: ParsedAction) -> Tuple[str, Optional[InlineKeyboardMarkup]]:
+def has_explicit_time_in_text(text: str) -> bool:
+    if not text:
+        return False
+    t = text.lower()
+    if re.search(r'\b(?:[01]?\d|2[0-3])[:\.\-][0-5]\d\b', t):
+        return True
+    if re.search(r'\bв\s+(?:[01]?\d|2[0-3])\s*(?:ч|час|часа|часов|ч\.)?\b', t):
+        return True
+    if re.search(r'\bчерез\s+\d+\s*(?:мин|минут|минуты|ч|час|часа|часов)\b', t):
+        return True
+    if any(kw in t for kw in ["утром", "днем", "днём", "вечером", "ночью"]):
+        return True
+    return False
+
+
+async def execute_action_pipeline(bot: Bot, chat_id: int, action: ParsedAction, state: Optional[FSMContext] = None, user_text: str = "") -> Tuple[str, Optional[InlineKeyboardMarkup]]:
     """
     Executes tasks, calendar events, and scheduled reminders according to ParsedAction.
     Returns (status_text, optional_inline_keyboard).
@@ -344,9 +468,10 @@ async def execute_action_pipeline(bot: Bot, chat_id: int, action: ParsedAction) 
         return await render_schedule_view(chat_id, action.query_date, action.query_end_date)
 
     status_notes = []
+    added_task_ids = []
 
-    # 0. Save Task(s) if requested for a date
-    if action.is_task_add:
+    # 0. Save Task(s) if requested for a date or reminder without explicit time
+    if action.is_task_add or (action.reminders and not action.event_start):
         tasks_to_add = []
         if action.tasks:
             for t in action.tasks:
@@ -359,15 +484,47 @@ async def execute_action_pipeline(bot: Bot, chat_id: int, action: ParsedAction) 
             for line in raw_lines:
                 if line:
                     tasks_to_add.append((line, t_date))
+        elif action.reminders:
+            for r in action.reminders:
+                if r.message and r.message.strip():
+                    t_date = r.trigger_at.date() if r.trigger_at else get_today()
+                    tasks_to_add.append((r.message.strip(), t_date))
 
         for task_str, t_date in tasks_to_add:
             try:
-                await tasks_service.add_task(user_id=chat_id, task_text=task_str, target_date=t_date)
+                task_id = await tasks_service.add_task(user_id=chat_id, task_text=task_str, target_date=t_date)
+                added_task_ids.append((task_id, task_str, t_date))
                 d_str = t_date.strftime("%d.%m.%Y")
                 status_notes.append(f"📋 Задача «{task_str}» сохранена на {d_str}!")
             except Exception as e:
                 logger.error(f"Error adding task: {e}")
                 status_notes.append(f"⚠️ Ошибка добавления задачи: {e}")
+
+    # Check if explicit time was specified in user text / request
+    explicit_time = has_explicit_time_in_text(user_text) or action.event_start is not None
+
+    if added_task_ids and not explicit_time and state:
+        action.reminders = []
+
+        first_id, first_text, first_date = added_task_ids[0]
+        await state.set_state(TaskTimePromptForm.waiting_for_time)
+        await state.update_data(
+            task_id=first_id,
+            task_text=first_text,
+            target_date_str=first_date.strftime("%Y-%m-%d")
+        )
+        d_str = first_date.strftime("%d.%m.%Y")
+        prompt_text = (
+            f"📋 Задача **«{first_text}»** сохранена на {d_str}!\n\n"
+            f"⏰ **На какое время поставить напоминание?**\n\n"
+            f"Напишите время (например: `14:30`, `в 18:00`) или нажмите/напишите **«Без времени»** (или «нет»).\n\n"
+            f"_(При выборе «Без времени» бот автоматически напомнит вам в 08:00, 12:00, 15:00 и 19:00)_"
+        )
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔔 Без времени", callback_data=f"task_time:no_time:{first_id}")],
+            [InlineKeyboardButton(text="❌ Без напоминаний", callback_data=f"task_time:skip:{first_id}")]
+        ])
+        return prompt_text, keyboard
 
     # 0. Save Quick Note ONLY if explicitly requested
     if action.is_note_save and action.note_content:
@@ -465,11 +622,43 @@ async def safe_edit_markdown(message: Message, text: str, reply_markup=None):
         await message.edit_text(text, reply_markup=reply_markup, parse_mode=None)
 
 
+@router.callback_query(F.data == "noop")
+async def process_noop(callback: CallbackQuery):
+    await callback.answer()
+
+
 @router.callback_query(F.data.startswith("mng_tasks:"))
 async def process_mng_tasks(callback: CallbackQuery):
-    date_str = callback.data.split(":", 1)[1]
+    parts = callback.data.split(":")
+    date_str = parts[1]
+    page = int(parts[2]) if len(parts) > 2 else 1
     target_date = datetime.strptime(date_str, "%Y-%m-%d").date()
-    text, reply_markup = await render_task_management_view(callback.from_user.id, target_date)
+    text, reply_markup = await render_task_management_view(callback.from_user.id, target_date, page)
+    await safe_edit_markdown(callback.message, text, reply_markup=reply_markup)
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("t_page:"))
+@router.callback_query(F.data.startswith("t_list:"))
+async def process_t_list_page(callback: CallbackQuery):
+    parts = callback.data.split(":")
+    date_str = parts[1]
+    page = int(parts[2]) if len(parts) > 2 else 1
+    target_date = datetime.strptime(date_str, "%Y-%m-%d").date()
+    text, reply_markup = await render_task_management_view(callback.from_user.id, target_date, page)
+    await safe_edit_markdown(callback.message, text, reply_markup=reply_markup)
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("select_t:"))
+async def process_select_task(callback: CallbackQuery):
+    parts = callback.data.split(":")
+    task_id = int(parts[1])
+    date_str = parts[2]
+    page = int(parts[3]) if len(parts) > 3 else 1
+    idx = int(parts[4]) if len(parts) > 4 else 1
+
+    text, reply_markup = await render_task_detail_view(callback.from_user.id, task_id, date_str, page, idx)
     await safe_edit_markdown(callback.message, text, reply_markup=reply_markup)
     await callback.answer()
 
@@ -494,36 +683,413 @@ async def process_mng_back(callback: CallbackQuery):
 
 @router.callback_query(F.data.startswith("toggle_t:"))
 async def process_toggle_task(callback: CallbackQuery):
-    _, task_id_str, date_str = callback.data.split(":")
-    task_id = int(task_id_str)
-    target_date = datetime.strptime(date_str, "%Y-%m-%d").date()
+    parts = callback.data.split(":")
+    task_id = int(parts[1])
+    date_str = parts[2]
+    page = int(parts[3]) if len(parts) > 3 else 1
+    idx = int(parts[4]) if len(parts) > 4 else 1
+
     await tasks_service.toggle_task(callback.from_user.id, task_id)
-    text, reply_markup = await render_task_management_view(callback.from_user.id, target_date)
+    text, reply_markup = await render_task_detail_view(callback.from_user.id, task_id, date_str, page, idx)
     await safe_edit_markdown(callback.message, text, reply_markup=reply_markup)
     await callback.answer("Статус задачи изменён ✨")
 
 
 @router.callback_query(F.data.startswith("del_t:"))
 async def process_delete_task(callback: CallbackQuery):
-    _, task_id_str, date_str = callback.data.split(":")
-    task_id = int(task_id_str)
-    target_date = datetime.strptime(date_str, "%Y-%m-%d").date()
+    parts = callback.data.split(":")
+    task_id = int(parts[1])
+    date_str = parts[2]
+    page = int(parts[3]) if len(parts) > 3 else 1
+
     await tasks_service.delete_task(callback.from_user.id, task_id)
-    text, reply_markup = await render_task_management_view(callback.from_user.id, target_date)
+    target_date = datetime.strptime(date_str, "%Y-%m-%d").date()
+    text, reply_markup = await render_task_management_view(callback.from_user.id, target_date, page)
     await safe_edit_markdown(callback.message, text, reply_markup=reply_markup)
     await callback.answer("Задача удалена 🗑")
 
 
-@router.callback_query(F.data.startswith("move_t_next:"))
-async def process_move_task_next(callback: CallbackQuery):
-    _, task_id_str, date_str = callback.data.split(":")
-    task_id = int(task_id_str)
+# --- TASK MOVE HANDLERS & HELPERS ---
+
+def parse_target_date(user_input: str, base_date: date) -> Optional[date]:
+    text = user_input.lower().strip()
+    if not text:
+        return None
+
+    match_full = re.search(r'\b(\d{1,2})[\.\/](\d{1,2})(?:[\.\/](\d{2,4}))?\b', text)
+    if match_full:
+        d = int(match_full.group(1))
+        m = int(match_full.group(2))
+        y = base_date.year
+        if match_full.group(3):
+            y_val = int(match_full.group(3))
+            y = y_val if y_val > 100 else 2000 + y_val
+        try:
+            return date(y, m, d)
+        except ValueError:
+            pass
+
+    if "послезавтра" in text:
+        return base_date + timedelta(days=2)
+
+    if "завтра" in text:
+        return base_date + timedelta(days=1)
+
+    match_days = re.search(r'через\s+(\d+)\s*(?:дня|дней|день|д)?', text)
+    if match_days:
+        try:
+            days = int(match_days.group(1))
+            return base_date + timedelta(days=days)
+        except ValueError:
+            pass
+
+    if "через неделю" in text or ("след" in text and "недель" in text):
+        return base_date + timedelta(days=7)
+
+    return None
+
+
+@router.callback_query(F.data.startswith("move_t_menu:"))
+async def process_move_task_menu(callback: CallbackQuery):
+    parts = callback.data.split(":")
+    task_id = int(parts[1])
+    date_str = parts[2]
+    page = parts[3] if len(parts) > 3 else "1"
+    idx = parts[4] if len(parts) > 4 else "1"
+
+    task = await tasks_service.get_task_by_id(callback.from_user.id, task_id)
+    if not task:
+        await callback.answer("⚠️ Задача не найдена или уже удалена.", show_alert=True)
+        return
+
+    text = (
+        f"⏩ **Перенос задачи:**\n\n"
+        f"Задача: **\"{task['task_text']}\"**\n\n"
+        f"Выберите вариант переноса:"
+    )
+
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⏩ Перенести на завтра", callback_data=f"move_t_opt:tomorrow:{task_id}:{date_str}:{page}:{idx}")],
+        [InlineKeyboardButton(text="📅 Перенести на след. неделю", callback_data=f"move_t_opt:next_week:{task_id}:{date_str}:{page}:{idx}")],
+        [InlineKeyboardButton(text="✍️ Указать дату (свободный ввод)", callback_data=f"move_t_opt:custom:{task_id}:{date_str}:{page}:{idx}")],
+        [InlineKeyboardButton(text="🔙 Отмена", callback_data=f"select_t:{task_id}:{date_str}:{page}:{idx}")]
+    ])
+    await safe_edit_markdown(callback.message, text, reply_markup=keyboard)
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("move_t_opt:"))
+async def process_move_task_option(callback: CallbackQuery, state: FSMContext):
+    parts = callback.data.split(":")
+    opt_type = parts[1]
+    task_id = int(parts[2])
+    date_str = parts[3]
+    page = parts[4] if len(parts) > 4 else "1"
+    idx = parts[5] if len(parts) > 5 else "1"
     target_date = datetime.strptime(date_str, "%Y-%m-%d").date()
-    next_date = target_date + timedelta(days=1)
-    await tasks_service.move_task_by_id(callback.from_user.id, task_id, next_date)
-    text, reply_markup = await render_task_management_view(callback.from_user.id, target_date)
-    await safe_edit_markdown(callback.message, text, reply_markup=reply_markup)
-    await callback.answer(f"Задача перенесена на {next_date.strftime('%d.%m.%Y')} 🌴")
+
+    task = await tasks_service.get_task_by_id(callback.from_user.id, task_id)
+    if not task:
+        await callback.answer("⚠️ Задача не найдена или уже удалена.", show_alert=True)
+        return
+
+    if opt_type == "tomorrow":
+        to_date = target_date + timedelta(days=1)
+        await tasks_service.move_task_by_id(callback.from_user.id, task_id, to_date)
+        text, reply_markup = await render_task_management_view(callback.from_user.id, target_date, int(page))
+        await safe_edit_markdown(callback.message, text, reply_markup=reply_markup)
+        await callback.answer(f"Задача перенесена на завтра ({to_date.strftime('%d.%m.%Y')}) 🌴")
+
+    elif opt_type == "next_week":
+        to_date = target_date + timedelta(days=7)
+        await tasks_service.move_task_by_id(callback.from_user.id, task_id, to_date)
+        text, reply_markup = await render_task_management_view(callback.from_user.id, target_date, int(page))
+        await safe_edit_markdown(callback.message, text, reply_markup=reply_markup)
+        await callback.answer(f"Задача перенесена на след. неделю ({to_date.strftime('%d.%m.%Y')}) 🌴")
+
+    elif opt_type == "custom":
+        await state.set_state(TaskMoveForm.waiting_for_date)
+        await state.update_data(task_id=task_id, target_date_str=date_str, task_text=task['task_text'], page=page, idx=idx)
+
+        text = (
+            f"✍️ **На какую дату перенести задачу?**\n\n"
+            f"Задача: **\"{task['task_text']}\"**\n\n"
+            f"Напишите дату (например: `05.09`, `15 сентября`, `через 3 дня`, `в пятницу`):\n\n"
+            f"_(наберите `/cancel` для отмены)_"
+        )
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔙 Отмена", callback_data=f"select_t:{task_id}:{date_str}:{page}:{idx}")]
+        ])
+        await safe_edit_markdown(callback.message, text, reply_markup=keyboard)
+        await callback.answer()
+
+
+@router.message(Command("cancel"), TaskMoveForm.waiting_for_date)
+async def cmd_cancel_task_move(message: Message, state: FSMContext):
+    data = await state.get_data()
+    date_str = data.get("target_date_str")
+    page = data.get("page", "1")
+    await state.clear()
+    if date_str:
+        target_date = datetime.strptime(date_str, "%Y-%m-%d").date()
+        text, reply_markup = await render_task_management_view(message.from_user.id, target_date, int(page))
+        await safe_answer_markdown(message, "❌ Перенос задачи отменён.", reply_markup=reply_markup)
+    else:
+        await message.answer("❌ Перенос задачи отменён.")
+
+
+@router.message(TaskMoveForm.waiting_for_date)
+async def process_task_move_date_input(message: Message, state: FSMContext):
+    data = await state.get_data()
+    task_id = data.get("task_id")
+    date_str = data.get("target_date_str")
+    page = data.get("page", "1")
+    task_text = data.get("task_text", "Задача")
+    user_input = message.text.strip() if message.text else ""
+
+    if not task_id or not user_input:
+        await message.answer("⚠️ Пожалуйста, укажите дату для переноса (или `/cancel`).")
+        return
+
+    base_date = datetime.strptime(date_str, "%Y-%m-%d").date() if date_str else get_today()
+    parsed_date = parse_target_date(user_input, base_date)
+
+    if parsed_date is None:
+        try:
+            parsed_action = await llm_service.parse_user_request(
+                text_content=f"перенеси задачу {task_text} на {user_input}"
+            )
+            if parsed_action.move_to_date:
+                parsed_date = parsed_action.move_to_date
+            elif parsed_action.task_date:
+                parsed_date = parsed_action.task_date
+            elif parsed_action.query_date:
+                parsed_date = parsed_action.query_date
+        except Exception as e:
+            logger.error(f"LLM fallback error for custom task move date: {e}")
+
+    if parsed_date is None:
+        await message.answer("⚠️ Не удалось распознать дату. Попробуйте написать, например: `05.09`, `завтра` или `через 3 дня` (или `/cancel`).")
+        return
+
+    success = await tasks_service.move_task_by_id(message.from_user.id, task_id, parsed_date)
+    await state.clear()
+
+    target_date = datetime.strptime(date_str, "%Y-%m-%d").date() if date_str else get_today()
+    text, reply_markup = await render_task_management_view(message.from_user.id, target_date, int(page))
+
+    if success:
+        date_formatted = parsed_date.strftime("%d.%m.%Y")
+        confirm_msg = f"✅ Задача **\"{task_text}\"** перенесена на **{date_formatted}** 🌴\n\n" + text
+        await safe_answer_markdown(message, confirm_msg, reply_markup=reply_markup)
+    else:
+        await message.answer("⚠️ Не удалось перенести задачу. Возможно, она была удалена.", reply_markup=reply_markup)
+
+
+# --- TASK TIME PROMPT HANDLERS & HELPERS ---
+
+def schedule_default_4_reminders(chat_id: int, task_text: str, target_date: Optional[date] = None) -> List[str]:
+    """
+    Schedules 4 default daily reminders (08:00, 12:00, 15:00, 19:00) for a task.
+    Returns list of formatted time strings that were scheduled.
+    """
+    if not target_date:
+        target_date = get_today()
+
+    now = get_now()
+    tz = get_tz()
+
+    default_times = [(8, 0), (12, 0), (15, 0), (19, 0)]
+    scheduled_times = []
+
+    for h, m in default_times:
+        dt = datetime.combine(target_date, datetime.min.time()).replace(hour=h, minute=m, tzinfo=tz)
+        if dt <= now and target_date == get_today():
+            dt = dt + timedelta(days=1)
+
+        msg = f"{task_text}"
+        scheduler_service.schedule_reminder(chat_id=chat_id, trigger_at=dt, message=msg)
+        scheduled_times.append(dt.strftime("%H:%M"))
+
+    return scheduled_times
+
+
+@router.callback_query(F.data.startswith("task_time:no_time:"))
+async def process_task_time_no_time(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
+    task_id = int(callback.data.split(":")[2])
+    task = await tasks_service.get_task_by_id(callback.from_user.id, task_id)
+    if not task:
+        await callback.answer("⚠️ Задача не найдена.", show_alert=True)
+        return
+
+    t_date = datetime.strptime(task["target_date"], "%Y-%m-%d").date()
+    times = schedule_default_4_reminders(callback.message.chat.id, task["task_text"], t_date)
+
+    times_str = ", ".join(times) if times else "08:00, 12:00, 15:00, 19:00"
+    msg = (
+        f"📋 Задача **«{task['task_text']}»** сохранена!\n\n"
+        f"⏰ Автоматически запланированы 4 напоминания: **{times_str}**."
+    )
+    await safe_edit_markdown(callback.message, msg)
+    await callback.answer("Запланировано 4 напоминания ⏰")
+
+
+@router.callback_query(F.data.startswith("task_time:skip:"))
+async def process_task_time_skip(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
+    task_id = int(callback.data.split(":")[2])
+    task = await tasks_service.get_task_by_id(callback.from_user.id, task_id)
+    task_text = task["task_text"] if task else "Задача"
+
+    msg = f"📋 Задача **«{task_text}»** сохранена без напоминаний."
+    await safe_edit_markdown(callback.message, msg)
+    await callback.answer("Сохранено без напоминаний")
+
+
+@router.message(Command("cancel"), TaskTimePromptForm.waiting_for_time)
+async def cmd_cancel_task_time(message: Message, state: FSMContext):
+    data = await state.get_data()
+    task_text = data.get("task_text", "Задача")
+    await state.clear()
+    await message.answer(f"📋 Задача **«{task_text}»** сохранена без точного времени.")
+
+
+@router.message(TaskTimePromptForm.waiting_for_time)
+async def process_task_time_input(message: Message, state: FSMContext):
+    data = await state.get_data()
+    task_id = data.get("task_id")
+    task_text = data.get("task_text", "Задача")
+    date_str = data.get("target_date_str")
+    user_input = message.text.strip() if message.text else ""
+
+    lower_input = user_input.lower()
+    no_time_keywords = ["без времени", "без", "нет", "не надо", "нет не надо", "без напом", "no", "none"]
+
+    if any(kw == lower_input or kw in lower_input for kw in no_time_keywords):
+        t_date = datetime.strptime(date_str, "%Y-%m-%d").date() if date_str else get_today()
+        times = schedule_default_4_reminders(message.chat.id, task_text, t_date)
+        await state.clear()
+        times_str = ", ".join(times) if times else "08:00, 12:00, 15:00, 19:00"
+        await message.answer(
+            f"📋 Задача **«{task_text}»** сохранена!\n\n"
+            f"⏰ Автоматически запланированы 4 напоминания: **{times_str}**.",
+            parse_mode="Markdown"
+        )
+        return
+
+    now = get_now()
+    target_dt = parse_absolute_datetime(user_input, now)
+
+    if target_dt is None:
+        try:
+            parsed_action = await llm_service.parse_user_request(
+                text_content=f"напомни {task_text} {user_input}"
+            )
+            if parsed_action.reminders and parsed_action.reminders[0].trigger_at:
+                trig = parsed_action.reminders[0].trigger_at
+                if trig.tzinfo is None:
+                    trig = trig.replace(tzinfo=get_tz())
+                if trig <= now:
+                    trig += timedelta(days=1)
+                target_dt = trig
+        except Exception as e:
+            logger.error(f"LLM fallback error for task time prompt: {e}")
+
+    if target_dt is None:
+        await message.answer(
+            "⚠️ Не удалось распознать время. Напишите время (например: `14:30`, `в 18:00`) или ответьте **«без времени»** (или «нет»)."
+        )
+        return
+
+    scheduler_service.schedule_reminder(
+        chat_id=message.chat.id,
+        trigger_at=target_dt,
+        message=task_text
+    )
+    await state.clear()
+    date_format = "%H:%M" if target_dt.date() == now.date() else "%d.%m.%Y в %H:%M"
+    time_str = target_dt.strftime(date_format)
+    await message.answer(
+        f"✅ Задача **«{task_text}»** сохранена!\n\n⏰ Напоминание запланировано на **{time_str}**.",
+        parse_mode="Markdown"
+    )
+
+
+@router.callback_query(F.data.startswith("edit_t:"))
+async def process_edit_task_callback(callback: CallbackQuery, state: FSMContext):
+    parts = callback.data.split(":")
+    task_id = int(parts[1])
+    date_str = parts[2]
+    page = parts[3] if len(parts) > 3 else "1"
+    idx = parts[4] if len(parts) > 4 else "1"
+
+    task = await tasks_service.get_task_by_id(callback.from_user.id, task_id)
+    if not task:
+        await callback.answer("⚠️ Задача не найдена или уже удалена.", show_alert=True)
+        return
+
+    await state.set_state(TaskEditForm.waiting_for_new_text)
+    await state.update_data(task_id=task_id, target_date_str=date_str, page=page, idx=idx)
+
+    text = (
+        f"✏️ **Редактирование задачи #{idx}:**\n\n"
+        f"Текущий текст: **\"{task['task_text']}\"**\n\n"
+        f"Отправьте новый текст для этой задачи сообщением в чат:\n\n"
+        f"_(наберите `/cancel` для отмены)_"
+    )
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔙 Отмена", callback_data=f"select_t:{task_id}:{date_str}:{page}:{idx}")]
+    ])
+    await safe_edit_markdown(callback.message, text, reply_markup=keyboard)
+    await callback.answer()
+
+
+@router.message(Command("cancel"), TaskEditForm.waiting_for_new_text)
+async def cmd_cancel_task_edit(message: Message, state: FSMContext):
+    data = await state.get_data()
+    task_id = data.get("task_id")
+    date_str = data.get("target_date_str")
+    page = data.get("page", "1")
+    idx = data.get("idx", "1")
+    await state.clear()
+    if task_id and date_str:
+        text, reply_markup = await render_task_detail_view(message.from_user.id, task_id, date_str, int(page), int(idx))
+        await safe_answer_markdown(message, "❌ Редактирование задачи отменено.", reply_markup=reply_markup)
+    elif date_str:
+        target_date = datetime.strptime(date_str, "%Y-%m-%d").date()
+        text, reply_markup = await render_task_management_view(message.from_user.id, target_date, int(page))
+        await safe_answer_markdown(message, "❌ Редактирование задачи отменено.", reply_markup=reply_markup)
+    else:
+        await message.answer("❌ Редактирование задачи отменено.")
+
+
+@router.message(TaskEditForm.waiting_for_new_text)
+async def process_task_edit_input(message: Message, state: FSMContext):
+    data = await state.get_data()
+    task_id = data.get("task_id")
+    date_str = data.get("target_date_str")
+    page = data.get("page", "1")
+    idx = data.get("idx", "1")
+    new_text = message.text.strip() if message.text else ""
+
+    if not task_id or not new_text:
+        await message.answer("⚠️ Текст задачи не может быть пустым. Введите новый текст задачи (или `/cancel`).")
+        return
+
+    success = await tasks_service.update_task_text(message.from_user.id, task_id, new_text)
+    await state.clear()
+
+    if date_str and success:
+        text, reply_markup = await render_task_detail_view(message.from_user.id, task_id, date_str, int(page), int(idx))
+        confirm_msg = f"✅ Текст задачи успешно изменён на: **\"{new_text}\"**!\n\n" + text
+        await safe_answer_markdown(message, confirm_msg, reply_markup=reply_markup)
+    elif date_str:
+        target_date = datetime.strptime(date_str, "%Y-%m-%d").date()
+        text, reply_markup = await render_task_management_view(message.from_user.id, target_date, int(page))
+        await message.answer("⚠️ Не удалось обновить задачу. Возможно, она была удалена.", reply_markup=reply_markup)
+    else:
+        await message.answer(f"✅ Текст задачи успешно изменён на: **\"{new_text}\"**!")
 
 
 @router.callback_query(F.data.startswith("edit_rem:"))
@@ -560,8 +1126,227 @@ async def process_delete_reminder(callback: CallbackQuery):
     await callback.answer("Напоминание удалено 🗑")
 
 
+# --- SNOOZE HANDLERS & HELPERS ---
+
+def extract_reminder_text(full_text: str) -> str:
+    text = full_text or ""
+    if "💤" in text:
+        text = text.split("💤", 1)[0]
+    text = re.sub(r'^.*?Напоминание:?\s*\**\s*', '', text, flags=re.DOTALL | re.IGNORECASE).strip()
+    return text
+
+
+def parse_relative_minutes(user_input: str) -> Optional[int]:
+    text = user_input.lower().strip()
+    if not text:
+        return None
+
+    if "полчаса" in text or "пол часа" in text:
+        return 30
+
+    match_h = re.search(r'(\d+(?:[\.,]\d+)?)\s*(?:час|часа|часов|ч|h)', text)
+    if match_h:
+        try:
+            val = float(match_h.group(1).replace(',', '.'))
+            return int(val * 60)
+        except ValueError:
+            pass
+
+    match_m = re.search(r'(\d+)\s*(?:мин|минут|минуты|м|m)?', text)
+    if match_m:
+        try:
+            return int(match_m.group(1))
+        except ValueError:
+            pass
+
+    return None
+
+
+def parse_absolute_datetime(user_input: str, current_dt: datetime) -> Optional[datetime]:
+    text = user_input.lower().strip()
+    if not text:
+        return None
+
+    tz = get_tz()
+    if current_dt.tzinfo is None:
+        current_dt = current_dt.replace(tzinfo=tz)
+    else:
+        current_dt = current_dt.astimezone(tz)
+
+    is_tomorrow = "завтра" in text
+
+    match_time = re.search(r'(?:в\s*)?([0-1]?\d|2[0-3])[:\.\s]([0-5]\d)', text)
+    if match_time:
+        h = int(match_time.group(1))
+        m = int(match_time.group(2))
+
+        target_date = current_dt.date()
+        if is_tomorrow:
+            target_date += timedelta(days=1)
+
+        candidate_dt = datetime.combine(target_date, datetime.min.time()).replace(hour=h, minute=m, tzinfo=tz)
+        if not is_tomorrow and candidate_dt <= current_dt:
+            candidate_dt += timedelta(days=1)
+        return candidate_dt
+
+    match_hour_only = re.search(r'\bв\s*([0-1]?\d|2[0-3])\b', text)
+    if match_hour_only:
+        h = int(match_hour_only.group(1))
+        target_date = current_dt.date()
+        if is_tomorrow:
+            target_date += timedelta(days=1)
+        candidate_dt = datetime.combine(target_date, datetime.min.time()).replace(hour=h, minute=0, tzinfo=tz)
+        if not is_tomorrow and candidate_dt <= current_dt:
+            candidate_dt += timedelta(days=1)
+        return candidate_dt
+
+    return None
+
+
+@router.callback_query(F.data == "snooze:def")
+async def process_snooze_def(callback: CallbackQuery):
+    msg_text = extract_reminder_text(callback.message.text or callback.message.caption or "")
+    minutes = getattr(settings, "DEFAULT_SNOOZE_MINUTES", 5)
+    now = get_now()
+    new_trigger_at = now + timedelta(minutes=minutes)
+
+    scheduler_service.schedule_reminder(
+        chat_id=callback.message.chat.id,
+        trigger_at=new_trigger_at,
+        message=msg_text
+    )
+
+    time_str = new_trigger_at.strftime("%H:%M")
+    updated_text = (
+        f"⏰ **Напоминание:**\n\n{msg_text}\n\n"
+        f"💤 *Отложено на {minutes} мин (до {time_str})*"
+    )
+
+    keyboard = get_reminder_inline_keyboard(minutes)
+
+    await safe_edit_markdown(callback.message, updated_text, reply_markup=keyboard)
+    await callback.answer(f"⏰ Отложено на {minutes} мин (до {time_str})")
+
+
+@router.callback_query(F.data == "snooze:rel")
+async def process_snooze_rel(callback: CallbackQuery, state: FSMContext):
+    msg_text = extract_reminder_text(callback.message.text or callback.message.caption or "")
+    await state.set_state(SnoozeForm.waiting_for_relative_time)
+    await state.update_data(reminder_text=msg_text, original_msg_id=callback.message.message_id)
+
+    prompt = (
+        f"⏱ **На сколько минут отложить?**\n\n"
+        f"Напоминание: *\"{msg_text}\"*\n\n"
+        f"Напишите время (например: `10`, `15 минут`, `30 мин`, `1.5 часа`):\n\n"
+        f"_(или наберите `/cancel` для отмены)_"
+    )
+    await callback.message.answer(prompt, parse_mode="Markdown")
+    await callback.answer()
+
+
+@router.callback_query(F.data == "snooze:abs")
+async def process_snooze_abs(callback: CallbackQuery, state: FSMContext):
+    msg_text = extract_reminder_text(callback.message.text or callback.message.caption or "")
+    await state.set_state(SnoozeForm.waiting_for_absolute_time)
+    await state.update_data(reminder_text=msg_text, original_msg_id=callback.message.message_id)
+
+    prompt = (
+        f"🕒 **На какое время отложить?**\n\n"
+        f"Напоминание: *\"{msg_text}\"*\n\n"
+        f"Укажите время или дату (например: `18:00`, `в 15:30`, `завтра в 10:00`):\n\n"
+        f"_(или наберите `/cancel` для отмены)_"
+    )
+    await callback.message.answer(prompt, parse_mode="Markdown")
+    await callback.answer()
+
+
+@router.message(Command("cancel"), SnoozeForm.waiting_for_relative_time)
+@router.message(Command("cancel"), SnoozeForm.waiting_for_absolute_time)
+async def cmd_cancel_snooze(message: Message, state: FSMContext):
+    await state.clear()
+    await message.answer("❌ Откладывание напоминания отменено.")
+
+
+@router.message(SnoozeForm.waiting_for_relative_time)
+async def process_snooze_relative_input(message: Message, state: FSMContext):
+    data = await state.get_data()
+    msg_text = data.get("reminder_text", "Напоминание")
+    user_input = message.text.strip() if message.text else ""
+
+    minutes = parse_relative_minutes(user_input)
+    now = get_now()
+
+    if minutes is None:
+        try:
+            parsed_action = await llm_service.parse_user_request(
+                text_content=f"напомни через {user_input} {msg_text}"
+            )
+            if parsed_action.reminders and parsed_action.reminders[0].trigger_at:
+                trig = parsed_action.reminders[0].trigger_at
+                if trig.tzinfo is None:
+                    trig = trig.replace(tzinfo=get_tz())
+                delta = trig - now
+                minutes = max(1, int(delta.total_seconds() / 60))
+        except Exception as e:
+            logger.error(f"LLM fallback error for relative snooze: {e}")
+
+    if minutes is None or minutes <= 0:
+        await message.answer("⚠️ Не удалось распознать время. Попробуйте написать, например: `15`, `20 минут` или `1.5 часа` (или `/cancel`).")
+        return
+
+    new_trigger_at = now + timedelta(minutes=minutes)
+    scheduler_service.schedule_reminder(
+        chat_id=message.chat.id,
+        trigger_at=new_trigger_at,
+        message=msg_text
+    )
+    time_str = new_trigger_at.strftime("%H:%M")
+    await state.clear()
+    await message.answer(f"💤 Напоминание **\"{msg_text}\"** отложено на **{minutes} мин** (до {time_str}) ⏰", parse_mode="Markdown")
+
+
+@router.message(SnoozeForm.waiting_for_absolute_time)
+async def process_snooze_absolute_input(message: Message, state: FSMContext):
+    data = await state.get_data()
+    msg_text = data.get("reminder_text", "Напоминание")
+    user_input = message.text.strip() if message.text else ""
+
+    now = get_now()
+    target_dt = parse_absolute_datetime(user_input, now)
+
+    if target_dt is None:
+        try:
+            parsed_action = await llm_service.parse_user_request(
+                text_content=f"напомни {msg_text} {user_input}"
+            )
+            if parsed_action.reminders and parsed_action.reminders[0].trigger_at:
+                trig = parsed_action.reminders[0].trigger_at
+                if trig.tzinfo is None:
+                    trig = trig.replace(tzinfo=get_tz())
+                if trig <= now:
+                    trig += timedelta(days=1)
+                target_dt = trig
+        except Exception as e:
+            logger.error(f"LLM fallback error for absolute snooze: {e}")
+
+    if target_dt is None:
+        await message.answer("⚠️ Не удалось распознать время. Попробуйте написать, например: `18:00`, `в 15:30` или `завтра в 10:00` (или `/cancel`).")
+        return
+
+    scheduler_service.schedule_reminder(
+        chat_id=message.chat.id,
+        trigger_at=target_dt,
+        message=msg_text
+    )
+
+    date_format = "%H:%M" if target_dt.date() == now.date() else "%d.%m.%Y в %H:%M"
+    time_str = target_dt.strftime(date_format)
+    await state.clear()
+    await message.answer(f"💤 Напоминание **\"{msg_text}\"** перенесено на **{time_str}** ⏰", parse_mode="Markdown")
+
+
 @router.message(F.text & ~F.text.startswith("/"))
-async def handle_text_message(message: Message, bot: Bot):
+async def handle_text_message(message: Message, bot: Bot, state: FSMContext):
     user_info = f"user_id={message.from_user.id}"
     if message.from_user.username:
         user_info += f" (@{message.from_user.username})"
@@ -570,7 +1355,7 @@ async def handle_text_message(message: Message, bot: Bot):
     try:
         ctx_date = context_service.get_last_date(message.chat.id)
         parsed_action = await llm_service.parse_user_request(text_content=message.text, context_date=ctx_date)
-        reply_text, reply_markup = await execute_action_pipeline(bot, message.chat.id, parsed_action)
+        reply_text, reply_markup = await execute_action_pipeline(bot, message.chat.id, parsed_action, state=state, user_text=message.text)
         await safe_answer_markdown(message, reply_text, reply_markup=reply_markup)
     except Exception as e:
         logger.error(f"Error handling text message: {e}", exc_info=True)

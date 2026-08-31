@@ -4,6 +4,8 @@ from aiogram import Router, Bot, F
 from aiogram.enums import ChatAction
 from aiogram.types import Message
 
+from aiogram.fsm.context import FSMContext
+
 from app.services.llm import llm_service
 from app.handlers.text import execute_action_pipeline, safe_answer_markdown
 
@@ -12,7 +14,7 @@ router = Router(name="media")
 
 
 @router.message(F.photo | F.document)
-async def handle_media_message(message: Message, bot: Bot):
+async def handle_media_message(message: Message, bot: Bot, state: FSMContext):
     await bot.send_chat_action(chat_id=message.chat.id, action=ChatAction.UPLOAD_PHOTO)
     
     caption = message.caption or ""
@@ -50,7 +52,7 @@ async def handle_media_message(message: Message, bot: Bot):
             mime_type=mime_type
         )
         
-        reply_text, reply_markup = await execute_action_pipeline(bot, message.chat.id, parsed_action)
+        reply_text, reply_markup = await execute_action_pipeline(bot, message.chat.id, parsed_action, state=state, user_text=caption)
         await safe_answer_markdown(message, reply_text, reply_markup=reply_markup)
 
     except Exception as e:

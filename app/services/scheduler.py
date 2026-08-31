@@ -7,10 +7,38 @@ from aiogram.enums import ParseMode
 from aiogram.client.default import DefaultBotProperties
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from app.config import settings
 from app.utils.timezone import get_now, get_tz
 
 logger = logging.getLogger(__name__)
+
+
+def get_reminder_inline_keyboard(snooze_minutes: Optional[int] = None) -> InlineKeyboardMarkup:
+    if snooze_minutes is None:
+        snooze_minutes = getattr(settings, "DEFAULT_SNOOZE_MINUTES", 5)
+
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(
+                text=f"⏳ Отложить на {snooze_minutes} мин",
+                callback_data="snooze:def"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                text="⏱ Отложить на N мин",
+                callback_data="snooze:rel"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                text="🕒 На какое время отложить",
+                callback_data="snooze:abs"
+            )
+        ]
+    ])
+    return keyboard
 
 
 async def send_reminder_notification(chat_id: int, message_text: str):
@@ -25,7 +53,16 @@ async def send_reminder_notification(chat_id: int, message_text: str):
     try:
         logger.info(f"Sending scheduled reminder to chat_id={chat_id}: '{message_text}'")
         formatted_msg = f"⏰ **Напоминание:**\n\n{message_text}"
-        await bot.send_message(chat_id=chat_id, text=formatted_msg)
+        keyboard = get_reminder_inline_keyboard()
+        try:
+            await bot.send_message(chat_id=chat_id, text=formatted_msg, reply_markup=keyboard)
+        except Exception:
+            await bot.send_message(
+                chat_id=chat_id,
+                text=f"⏰ Напоминание:\n\n{message_text}",
+                reply_markup=keyboard,
+                parse_mode=None
+            )
     except Exception as e:
         logger.error(f"Error sending scheduled reminder notification: {e}", exc_info=True)
     finally:
@@ -181,12 +218,58 @@ class SchedulerService:
                                 "time": run_dt.strftime("%H:%M"),
                                 "message": job.args[1] if len(job.args) > 1 else "Напоминание"
                             }
-            res_list = list(results.values())
-            res_list.sort(key=lambda x: (x["date"], x["time"]))
             return res_list
         except Exception as e:
             logger.error(f"Error searching reminders for query '{query}': {e}")
             return []
+
+    def setup_periodic_schedule_summary(self, chat_id: int, interval_hours: int):
+        """
+        Schedules or cancels periodic schedule summary job for user.
+        If interval_hours > 0, schedules job every N hours.
+        """
+        job_id = f"periodic_sched_{chat_id}"
+        try:
+            if self.scheduler.get_job(job_id):
+                self.scheduler.remove_job(job_id)
+                logger.info(f"Removed old periodic schedule summary job {job_id}")
+
+            if interval_hours > 0:
+                from apscheduler.triggers.interval import IntervalTrigger
+                trigger = IntervalTrigger(hours=interval_hours, timezone=get_tz())
+                self.scheduler.add_job(
+                    send_periodic_schedule_summary,
+                    trigger=trigger,
+                    id=job_id,
+                    args=[chat_id],
+                    replace_existing=True
+                )
+                logger.info(f"Scheduled periodic schedule summary for chat {chat_id} every {interval_hours} hours.")
+        except Exception as e:
+            logger.error(f"Failed to setup periodic schedule summary for chat {chat_id}: {e}")
+
+
+async def send_periodic_schedule_summary(chat_id: int):
+    """
+    Callback function executed by APScheduler periodically to send current day schedule summary.
+    """
+    from app.handlers.text import render_schedule_view
+    bot = Bot(
+        token=settings.BOT_TOKEN,
+        default=DefaultBotProperties(parse_mode=ParseMode.MARKDOWN)
+    )
+    try:
+        today = get_today()
+        text, reply_markup = await render_schedule_view(chat_id, today)
+        formatted_msg = f"🔔 **Авто-напоминание планов на сегодня:**\n\n{text}"
+        try:
+            await bot.send_message(chat_id=chat_id, text=formatted_msg, reply_markup=reply_markup)
+        except Exception:
+            await bot.send_message(chat_id=chat_id, text=formatted_msg, reply_markup=reply_markup, parse_mode=None)
+    except Exception as e:
+        logger.error(f"Error sending periodic schedule summary: {e}", exc_info=True)
+    finally:
+        await bot.session.close()
 
 
 scheduler_service = SchedulerService()

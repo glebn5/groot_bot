@@ -227,6 +227,41 @@ class TasksService:
             logger.error(f"Error moving task #{task_id} to {to_date_str}: {e}", exc_info=True)
             return False
 
+    async def get_task_by_id(self, user_id: int, task_id: int) -> Optional[Dict[str, Any]]:
+        """
+        Gets a single task by ID for user_id.
+        """
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                conn.row_factory = sqlite3.Row
+                cursor = conn.cursor()
+                cursor.execute(
+                    "SELECT id, task_text, target_date, is_completed, created_at FROM user_tasks WHERE id = ? AND user_id = ?",
+                    (task_id, user_id)
+                )
+                row = cursor.fetchone()
+                return dict(row) if row else None
+        except Exception as e:
+            logger.error(f"Error getting task #{task_id}: {e}", exc_info=True)
+            return None
+
+    async def update_task_text(self, user_id: int, task_id: int, new_text: str) -> bool:
+        """
+        Updates the text of a task by ID for user_id.
+        """
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "UPDATE user_tasks SET task_text = ? WHERE id = ? AND user_id = ?",
+                    (new_text.strip(), task_id, user_id)
+                )
+                conn.commit()
+                return cursor.rowcount > 0
+        except Exception as e:
+            logger.error(f"Error updating task #{task_id}: {e}", exc_info=True)
+            return False
+
     async def delete_task(self, user_id: int, task_id: int) -> bool:
         """
         Deletes a task by ID.

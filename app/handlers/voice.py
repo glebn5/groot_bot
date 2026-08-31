@@ -5,6 +5,8 @@ from aiogram import Router, Bot, F
 from aiogram.enums import ChatAction
 from aiogram.types import Message
 
+from aiogram.fsm.context import FSMContext
+
 from app.services.stt import stt_service
 from app.services.llm import llm_service
 from app.services.context import context_service
@@ -15,7 +17,7 @@ router = Router(name="voice")
 
 
 @router.message(F.voice | F.audio)
-async def handle_voice_message(message: Message, bot: Bot):
+async def handle_voice_message(message: Message, bot: Bot, state: FSMContext):
     await bot.send_chat_action(chat_id=message.chat.id, action=ChatAction.RECORD_VOICE)
     
     voice_or_audio = message.voice or message.audio
@@ -47,7 +49,7 @@ async def handle_voice_message(message: Message, bot: Bot):
         await bot.send_chat_action(chat_id=message.chat.id, action=ChatAction.TYPING)
         ctx_date = context_service.get_last_date(message.chat.id)
         parsed_action = await llm_service.parse_user_request(text_content=transcribed_text, context_date=ctx_date)
-        reply_text, reply_markup = await execute_action_pipeline(bot, message.chat.id, parsed_action)
+        reply_text, reply_markup = await execute_action_pipeline(bot, message.chat.id, parsed_action, state=state, user_text=transcribed_text)
         
         await safe_answer_markdown(message, reply_text, reply_markup=reply_markup)
 
