@@ -7,7 +7,7 @@ from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKe
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 
-from typing import Union
+from typing import Union, Optional
 from app.config import settings
 from app.services.obsidian import obsidian_service
 from app.services.llm import llm_service
@@ -19,6 +19,22 @@ from app.handlers.text import render_schedule_view
 
 logger = logging.getLogger(__name__)
 router = Router(name="settings")
+
+
+def normalize_time_input(val: str) -> Optional[str]:
+    """
+    Normalizes time inputs like '22 30', '22:30', '22.30', '22-30', '2230' to '22:30'.
+    Returns formatted 'HH:MM' string or None if invalid.
+    """
+    if not val:
+        return None
+    val = val.strip()
+    match = re.match(r"^(\d{1,2})[\s\.\:-]*(\d{2})$", val)
+    if match:
+        h, m = int(match.group(1)), int(match.group(2))
+        if 0 <= h <= 23 and 0 <= m <= 59:
+            return f"{h:02d}:{m:02d}"
+    return None
 
 
 class SettingsForm(StatesGroup):
@@ -595,12 +611,26 @@ async def process_close_settings(event: Union[Message, CallbackQuery], state: FS
 
 
 @router.message(Command("cancel"), FSMContext)
+@router.message(F.text.in_({"cancel", "/cancel", "отмена", "Отмена", "❌ Отмена", "🔙 Отмена"}), FSMContext)
 async def cmd_cancel_settings(message: Message, state: FSMContext):
     data = await state.get_data()
     cat = data.get("target_cat", "main")
     await state.clear()
-    text, keyboard = render_settings_main()
-    await message.answer("❌ Ввод отменен.", reply_markup=keyboard)
+
+    if cat == "quiet_hours":
+        text, keyboard = render_settings_quiet_hours()
+    elif cat == "snooze":
+        text, keyboard = render_settings_snooze()
+    elif cat == "llm":
+        text, keyboard = render_settings_llm()
+    elif cat == "obsidian":
+        text, keyboard = render_settings_obsidian()
+    elif cat == "calendar":
+        text, keyboard = render_settings_calendar()
+    else:
+        text, keyboard = render_settings_main()
+
+    await message.answer("❌ Ввод отменен.", reply_markup=keyboard, parse_mode="Markdown")
 
 
 @router.message(SettingsForm.waiting_for_sa_file)
@@ -658,6 +688,14 @@ async def process_new_setting_value(message: Message, state: FSMContext):
         update_env_file(key_name, str(parsed_val))
         setattr(settings, key_name, parsed_val)
         scheduler_service.setup_periodic_schedule_summary(message.from_user.id, parsed_val)
+    elif key_name in ["QUIET_HOURS_START", "QUIET_HOURS_END", "GOALS_REMINDER_TIME"]:
+        norm_time = normalize_time_input(new_value)
+        if not norm_time:
+            await message.answer("⚠️ Неверный формат времени! Пожалуйста, укажите время в формате HH:MM (например, `22:30` или `08:00`).")
+            return
+        new_value = norm_time
+        update_env_file(key_name, new_value)
+        setattr(settings, key_name, new_value)
     else:
         update_env_file(key_name, new_value)
         setattr(settings, key_name, new_value)
@@ -680,8 +718,10 @@ async def process_new_setting_value(message: Message, state: FSMContext):
         text, keyboard = render_settings_calendar()
     elif category == "snooze":
         text, keyboard = render_settings_snooze()
+    elif category == "quiet_hours":
+        text, keyboard = render_settings_quiet_hours()
     else:
         text, keyboard = render_settings_main()
 
-    success_msg = f"✅ Переменная **`{key_name}`** успешно обновлена!\n\n" + text
+    success_msg = f"✅ Переменная **`{key_name}`** успешно обновлена (`{new_value}`)!\n\n" + text
     await message.answer(success_msg, reply_markup=keyboard, parse_mode="Markdown")

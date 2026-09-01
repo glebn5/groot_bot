@@ -320,12 +320,24 @@ class SchedulerService:
                 if start_dt <= now:
                     start_dt += timedelta(days=1)
                 trigger = IntervalTrigger(days=interval_days, start_date=start_dt, timezone=tz)
-            elif repeat_type == "custom_cron" and cron_expr:
+            elif repeat_type == "interval_hours":
+                from apscheduler.triggers.interval import IntervalTrigger
+                hours_val = interval_days if (interval_days and interval_days > 0) else 1
+                trigger = IntervalTrigger(hours=hours_val, timezone=tz)
+            elif repeat_type == "interval_minutes":
+                from apscheduler.triggers.interval import IntervalTrigger
+                mins_val = interval_days if (interval_days and interval_days > 0) else 30
+                trigger = IntervalTrigger(minutes=mins_val, timezone=tz)
+            elif repeat_type == "custom_cron" and cron_expr and cron_expr.strip():
                 from apscheduler.triggers.cron import CronTrigger
-                trigger = CronTrigger.from_crontab(cron_expr, timezone=tz)
+                try:
+                    trigger = CronTrigger.from_crontab(cron_expr.strip(), timezone=tz)
+                except Exception:
+                    from apscheduler.triggers.interval import IntervalTrigger
+                    trigger = IntervalTrigger(hours=1, timezone=tz)
             else:
-                from apscheduler.triggers.cron import CronTrigger
-                trigger = CronTrigger(hour=hour, minute=minute, timezone=tz)
+                from apscheduler.triggers.interval import IntervalTrigger
+                trigger = IntervalTrigger(hours=1, timezone=tz)
 
             self.scheduler.add_job(
                 send_recurring_task_notification,

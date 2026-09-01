@@ -31,7 +31,7 @@ DAY_CODES_MAP = {
 def format_schedule_description(task: dict) -> str:
     r_type = task.get("repeat_type")
     r_time = task.get("target_time") or "10:00"
-    cron = task.get("cron_expression") or ""
+    cron = (task.get("cron_expression") or "").strip()
     interval = task.get("interval_days")
 
     if r_type == "daily":
@@ -42,7 +42,15 @@ def format_schedule_description(task: dict) -> str:
         return f"по дням ({formatted_days}) в {r_time}"
     elif r_type == "interval_days" and interval:
         return f"каждые {interval} дн. в {r_time}"
+    elif r_type == "interval_hours":
+        h_val = interval if (interval and interval > 0) else 1
+        return "каждый час" if h_val == 1 else f"каждые {h_val} ч."
+    elif r_type == "interval_minutes":
+        m_val = interval if (interval and interval > 0) else 30
+        return f"каждые {m_val} мин."
     elif r_type == "custom_cron":
+        if cron == "0 * * * *" or not cron:
+            return "каждый час"
         return f"cron `{cron}`"
     return f"в {r_time}"
 
@@ -159,42 +167,57 @@ async def process_rec_snooze(callback: CallbackQuery):
         await callback.message.answer(f"⏳ Напоминание по привычке **«{title}»** отложено на 15 минут.", parse_mode="Markdown")
 
 
-@router.callback_query(F.data.startswith("rec_skip:"))
-async def process_rec_skip(callback: CallbackQuery):
-    t_id = int(callback.data.split(":", 1)[1])
-    task = await recurring_service.get_task_by_id(t_id)
-    title = task["title"] if task else "Привычка"
-    await callback.answer("Напоминание пропущено.")
-    try:
-        await callback.message.edit_text(f"❌ Напоминание по привычке **«{title}»** пропущено.", parse_mode="Markdown")
-    except Exception:
-        await callback.message.answer(f"❌ Напоминание по привычке **«{title}»** пропущено.", parse_mode="Markdown")
-
-
 # FSM Wizard for adding habit manually
 @router.callback_query(F.data == "add_rec_prompt")
 async def process_add_rec_prompt(callback: CallbackQuery, state: FSMContext):
     await state.set_state(HabitAddForm.title)
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_rec_add")]
+    ])
     await callback.message.answer(
         "✍️ **Создание новой привычки / повторяющейся задачи:**\n\n"
-        "Напишите название привычки (например: `Пить воду`, `Зарядка`, `Поливать цветы`).\n"
-        "_(Или наберите `/cancel` для отмены)_"
+        "Напишите название привычки (например: `Пить воду`, `Зарядка`, `Поливать цветы`).\n\n"
+        "Для отмены нажмите кнопку ниже или отправьте /cancel.",
+        reply_markup=keyboard,
+        parse_mode="Markdown"
     )
     await callback.answer()
+
+
+@router.callback_query(F.data == "cancel_rec_add")
+async def process_cancel_rec_add_callback(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
+    await callback.answer("Создание привычки отменено.")
+    text, reply_markup = await render_habits_view(callback.from_user.id)
+    try:
+        await callback.message.edit_text(text, reply_markup=reply_markup, parse_mode="Markdown")
+    except Exception:
+        await callback.message.answer(text, reply_markup=reply_markup, parse_mode="Markdown")
 
 
 @router.message(Command("cancel"), HabitAddForm.title)
 @router.message(Command("cancel"), HabitAddForm.repeat_type)
 @router.message(Command("cancel"), HabitAddForm.days_or_interval)
 @router.message(Command("cancel"), HabitAddForm.time)
+@router.message(F.text.in_({"cancel", "/cancel", "отмена", "Отмена", "❌ Отмена", "🔙 Отмена"}), HabitAddForm.title)
+@router.message(F.text.in_({"cancel", "/cancel", "отмена", "Отмена", "❌ Отмена", "🔙 Отмена"}), HabitAddForm.repeat_type)
+@router.message(F.text.in_({"cancel", "/cancel", "отмена", "Отмена", "❌ Отмена", "🔙 Отмена"}), HabitAddForm.days_or_interval)
+@router.message(F.text.in_({"cancel", "/cancel", "отмена", "Отмена", "❌ Отмена", "🔙 Отмена"}), HabitAddForm.time)
 async def process_cancel_add_rec(message: Message, state: FSMContext):
     await state.clear()
-    await message.answer("❌ Создание привычки отменено.")
+    text, reply_markup = await render_habits_view(message.from_user.id)
+    await message.answer("❌ Создание привычки отменено.", reply_markup=reply_markup, parse_mode="Markdown")
 
 
 @router.message(HabitAddForm.title)
 async def process_rec_title(message: Message, state: FSMContext):
-    title = message.text.strip()
+    title = message.text.strip() if message.text else ""
+    if title.lower() in ["/cancel", "cancel", "отмена", "❌ отмена", "🔙 отмена"]:
+        await state.clear()
+        text, reply_markup = await render_habits_view(message.from_user.id)
+        await message.answer("❌ Создание привычки отменено.", reply_markup=reply_markup, parse_mode="Markdown")
+        return
+
     if not title:
         await message.answer("Пожалуйста, введите название привычки.")
         return
@@ -205,7 +228,8 @@ async def process_rec_title(message: Message, state: FSMContext):
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📅 Каждый день (daily)", callback_data="rec_type:daily")],
         [InlineKeyboardButton(text="📆 По дням недели (weekly)", callback_data="rec_type:weekly")],
-        [InlineKeyboardButton(text="⏱ С интервалом в N дней", callback_data="rec_type:interval_days")]
+        [InlineKeyboardButton(text="⏱ С интервалом в N дней", callback_data="rec_type:interval_days")],
+        [InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_rec_add")]
     ])
     await message.answer(f"📌 Привычка: **«{title}»**\n\nВыберите тип повторения:", reply_markup=keyboard, parse_mode="Markdown")
 
@@ -215,10 +239,15 @@ async def process_rec_type(callback: CallbackQuery, state: FSMContext):
     r_type = callback.data.split(":", 1)[1]
     await state.update_data(repeat_type=r_type)
 
+    cancel_kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_rec_add")]
+    ])
+
     if r_type == "daily":
         await state.set_state(HabitAddForm.time)
         await callback.message.edit_text(
-            "⏰ **Введите время суток (HH:MM):**\nНапример: `09:00`, `11:30`, `18:00`",
+            "⏰ **Введите время суток (HH:MM):**\nНапример: `09:00`, `11:30`, `18:00`\n\nДля отмены нажмите кнопку ниже или отправьте /cancel.",
+            reply_markup=cancel_kb,
             parse_mode="Markdown"
         )
     elif r_type == "weekly":
@@ -227,7 +256,8 @@ async def process_rec_type(callback: CallbackQuery, state: FSMContext):
             [InlineKeyboardButton(text="По будням (Пн-Пт)", callback_data="rec_days:mon,tue,wed,thu,fri")],
             [InlineKeyboardButton(text="По выходным (Сб-Вс)", callback_data="rec_days:sat,sun")],
             [InlineKeyboardButton(text="Пн, Ср, Пт", callback_data="rec_days:mon,wed,fri")],
-            [InlineKeyboardButton(text="Вт, Чт", callback_data="rec_days:tue,thu")]
+            [InlineKeyboardButton(text="Вт, Чт", callback_data="rec_days:tue,thu")],
+            [InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_rec_add")]
         ])
         await callback.message.edit_text("📆 **Выберите дни недели:**", reply_markup=keyboard, parse_mode="Markdown")
     elif r_type == "interval_days":
@@ -237,7 +267,8 @@ async def process_rec_type(callback: CallbackQuery, state: FSMContext):
                 InlineKeyboardButton(text="Каждые 2 дня", callback_data="rec_interval:2"),
                 InlineKeyboardButton(text="Каждые 3 дня", callback_data="rec_interval:3"),
                 InlineKeyboardButton(text="Каждые 4 дня", callback_data="rec_interval:4")
-            ]
+            ],
+            [InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_rec_add")]
         ])
         await callback.message.edit_text("⏱ **Выберите интервал в днях:**", reply_markup=keyboard, parse_mode="Markdown")
     await callback.answer()
@@ -255,8 +286,12 @@ async def process_rec_days_or_interval(callback: CallbackQuery, state: FSMContex
         await state.update_data(interval_days=interval_val)
 
     await state.set_state(HabitAddForm.time)
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_rec_add")]
+    ])
     await callback.message.edit_text(
-        "⏰ **Введите время суток (HH:MM):**\nНапример: `09:00`, `11:30`, `18:00`",
+        "⏰ **Введите время суток (HH:MM):**\nНапример: `09:00`, `11:30`, `18:00`\n\nДля отмены нажмите кнопку ниже или отправьте /cancel.",
+        reply_markup=keyboard,
         parse_mode="Markdown"
     )
     await callback.answer()
@@ -264,7 +299,13 @@ async def process_rec_days_or_interval(callback: CallbackQuery, state: FSMContex
 
 @router.message(HabitAddForm.time)
 async def process_rec_time(message: Message, state: FSMContext):
-    time_str = message.text.strip()
+    time_str = message.text.strip() if message.text else ""
+    if time_str.lower() in ["/cancel", "cancel", "отмена", "❌ отмена", "быть отменено", "🔙 отмена"]:
+        await state.clear()
+        text, reply_markup = await render_habits_view(message.from_user.id)
+        await message.answer("❌ Создание привычки отменено.", reply_markup=reply_markup, parse_mode="Markdown")
+        return
+
     try:
         # Validate HH:MM format
         parts = time_str.split(":")
@@ -273,7 +314,10 @@ async def process_rec_time(message: Message, state: FSMContext):
             raise ValueError
         formatted_time = f"{h:02d}:{m:02d}"
     except Exception:
-        await message.answer("⚠️ Неверный формат времени. Введите время в формате HH:MM (например, `09:00` или `18:30`).")
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_rec_add")]
+        ])
+        await message.answer("⚠️ Неверный формат времени. Введите время в формате HH:MM (например, `09:00` или `18:30`) или нажмите Отмена.", reply_markup=keyboard)
         return
 
     data = await state.get_data()

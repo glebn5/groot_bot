@@ -859,7 +859,7 @@ async def process_move_task_option(callback: CallbackQuery, state: FSMContext):
             f"✍️ **На какую дату перенести задачу?**\n\n"
             f"Задача: **\"{task['task_text']}\"**\n\n"
             f"Напишите дату (например: `05.09`, `15 сентября`, `через 3 дня`, `в пятницу`):\n\n"
-            f"_(наберите `/cancel` для отмены)_"
+            f"_(нажмите кнопку ниже или отправьте /cancel для отмены)_"
         )
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🔙 Отмена", callback_data=f"select_t:{task_id}:{date_str}:{page}:{idx}")]
@@ -869,6 +869,7 @@ async def process_move_task_option(callback: CallbackQuery, state: FSMContext):
 
 
 @router.message(Command("cancel"), TaskMoveForm.waiting_for_date)
+@router.message(F.text.in_({"cancel", "/cancel", "отмена", "Отмена", "❌ Отмена", "🔙 Отмена"}), TaskMoveForm.waiting_for_date)
 async def cmd_cancel_task_move(message: Message, state: FSMContext):
     data = await state.get_data()
     date_str = data.get("target_date_str")
@@ -891,8 +892,12 @@ async def process_task_move_date_input(message: Message, state: FSMContext):
     task_text = data.get("task_text", "Задача")
     user_input = message.text.strip() if message.text else ""
 
+    if user_input.lower() in ["/cancel", "cancel", "отмена", "❌ отмена", "🔙 отмена"]:
+        await cmd_cancel_task_move(message, state)
+        return
+
     if not task_id or not user_input:
-        await message.answer("⚠️ Пожалуйста, укажите дату для переноса (или `/cancel`).")
+        await message.answer("⚠️ Пожалуйста, укажите дату для переноса (или /cancel).")
         return
 
     base_date = datetime.strptime(date_str, "%Y-%m-%d").date() if date_str else get_today()
@@ -992,6 +997,7 @@ async def process_task_time_skip(callback: CallbackQuery, state: FSMContext):
 
 
 @router.message(Command("cancel"), TaskTimePromptForm.waiting_for_time)
+@router.message(F.text.in_({"cancel", "/cancel", "отмена", "Отмена", "❌ Отмена", "🔙 Отмена"}), TaskTimePromptForm.waiting_for_time)
 async def cmd_cancel_task_time(message: Message, state: FSMContext):
     data = await state.get_data()
     task_text = data.get("task_text", "Задача")
@@ -1006,6 +1012,10 @@ async def process_task_time_input(message: Message, state: FSMContext):
     task_text = data.get("task_text", "Задача")
     date_str = data.get("target_date_str")
     user_input = message.text.strip() if message.text else ""
+
+    if user_input.lower() in ["/cancel", "cancel", "отмена", "❌ отмена", "быть отменено", "🔙 отмена"]:
+        await cmd_cancel_task_time(message, state)
+        return
 
     lower_input = user_input.lower()
     no_time_keywords = ["без времени", "без", "нет", "не надо", "нет не надо", "без напом", "no", "none"]
@@ -1041,8 +1051,13 @@ async def process_task_time_input(message: Message, state: FSMContext):
             logger.error(f"LLM fallback error for task time prompt: {e}")
 
     if target_dt is None:
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔔 Без времени", callback_data=f"task_time:no_time:{task_id}")],
+            [InlineKeyboardButton(text="❌ Отмена", callback_data=f"task_time:skip:{task_id}")]
+        ])
         await message.answer(
-            "⚠️ Не удалось распознать время. Напишите время (например: `14:30`, `в 18:00`) или ответьте **«без времени»** (или «нет»)."
+            "⚠️ Не удалось распознать время. Напишите время (например: `14:30`, `в 18:00`) или ответьте **«без времени»** (или /cancel).",
+            reply_markup=keyboard
         )
         return
 
@@ -1080,7 +1095,7 @@ async def process_edit_task_callback(callback: CallbackQuery, state: FSMContext)
         f"✏️ **Редактирование задачи #{idx}:**\n\n"
         f"Текущий текст: **\"{task['task_text']}\"**\n\n"
         f"Отправьте новый текст для этой задачи сообщением в чат:\n\n"
-        f"_(наберите `/cancel` для отмены)_"
+        f"_(нажмите кнопку ниже или отправьте /cancel для отмены)_"
     )
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🔙 Отмена", callback_data=f"select_t:{task_id}:{date_str}:{page}:{idx}")]
@@ -1090,6 +1105,7 @@ async def process_edit_task_callback(callback: CallbackQuery, state: FSMContext)
 
 
 @router.message(Command("cancel"), TaskEditForm.waiting_for_new_text)
+@router.message(F.text.in_({"cancel", "/cancel", "отмена", "Отмена", "❌ Отмена", "🔙 Отмена"}), TaskEditForm.waiting_for_new_text)
 async def cmd_cancel_task_edit(message: Message, state: FSMContext):
     data = await state.get_data()
     task_id = data.get("task_id")
@@ -1117,8 +1133,12 @@ async def process_task_edit_input(message: Message, state: FSMContext):
     idx = data.get("idx", "1")
     new_text = message.text.strip() if message.text else ""
 
+    if new_text.lower() in ["/cancel", "cancel", "отмена", "❌ отмена", "🔙 отмена"]:
+        await cmd_cancel_task_edit(message, state)
+        return
+
     if not task_id or not new_text:
-        await message.answer("⚠️ Текст задачи не может быть пустым. Введите новый текст задачи (или `/cancel`).")
+        await message.answer("⚠️ Текст задачи не может быть пустым. Введите новый текст задачи (или /cancel).")
         return
 
     success = await tasks_service.update_task_text(message.from_user.id, task_id, new_text)
@@ -1282,9 +1302,12 @@ async def process_snooze_rel(callback: CallbackQuery, state: FSMContext):
         f"⏱ **На сколько минут отложить?**\n\n"
         f"Напоминание: *\"{msg_text}\"*\n\n"
         f"Напишите время (например: `10`, `15 минут`, `30 мин`, `1.5 часа`):\n\n"
-        f"_(или наберите `/cancel` для отмены)_"
+        f"_(нажмите кнопку ниже или отправьте /cancel для отмены)_"
     )
-    await callback.message.answer(prompt, parse_mode="Markdown")
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_snooze")]
+    ])
+    await callback.message.answer(prompt, reply_markup=keyboard, parse_mode="Markdown")
     await callback.answer()
 
 
@@ -1298,14 +1321,29 @@ async def process_snooze_abs(callback: CallbackQuery, state: FSMContext):
         f"🕒 **На какое время отложить?**\n\n"
         f"Напоминание: *\"{msg_text}\"*\n\n"
         f"Укажите время или дату (например: `18:00`, `в 15:30`, `завтра в 10:00`):\n\n"
-        f"_(или наберите `/cancel` для отмены)_"
+        f"_(нажмите кнопку ниже или отправьте /cancel для отмены)_"
     )
-    await callback.message.answer(prompt, parse_mode="Markdown")
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_snooze")]
+    ])
+    await callback.message.answer(prompt, reply_markup=keyboard, parse_mode="Markdown")
     await callback.answer()
+
+
+@router.callback_query(F.data == "cancel_snooze")
+async def process_cancel_snooze_callback(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
+    await callback.answer("Откладывание отменено.")
+    try:
+        await callback.message.edit_text("❌ Откладывание напоминания отменено.")
+    except Exception:
+        await callback.message.answer("❌ Откладывание напоминания отменено.")
 
 
 @router.message(Command("cancel"), SnoozeForm.waiting_for_relative_time)
 @router.message(Command("cancel"), SnoozeForm.waiting_for_absolute_time)
+@router.message(F.text.in_({"cancel", "/cancel", "отмена", "Отмена", "❌ Отмена", "быть отменено", "🔙 Отмена"}), SnoozeForm.waiting_for_relative_time)
+@router.message(F.text.in_({"cancel", "/cancel", "отмена", "Отмена", "❌ Отмена", "быть отменено", "🔙 Отмена"}), SnoozeForm.waiting_for_absolute_time)
 async def cmd_cancel_snooze(message: Message, state: FSMContext):
     await state.clear()
     await message.answer("❌ Откладывание напоминания отменено.")
@@ -1316,6 +1354,10 @@ async def process_snooze_relative_input(message: Message, state: FSMContext):
     data = await state.get_data()
     msg_text = data.get("reminder_text", "Напоминание")
     user_input = message.text.strip() if message.text else ""
+
+    if user_input.lower() in ["/cancel", "cancel", "отмена", "❌ отмена", "быть отменено", "🔙 отмена"]:
+        await cmd_cancel_snooze(message, state)
+        return
 
     minutes = parse_relative_minutes(user_input)
     now = get_now()
@@ -1335,7 +1377,10 @@ async def process_snooze_relative_input(message: Message, state: FSMContext):
             logger.error(f"LLM fallback error for relative snooze: {e}")
 
     if minutes is None or minutes <= 0:
-        await message.answer("⚠️ Не удалось распознать время. Попробуйте написать, например: `15`, `20 минут` или `1.5 часа` (или `/cancel`).")
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_snooze")]
+        ])
+        await message.answer("⚠️ Не удалось распознать время. Попробуйте написать, например: `15`, `20 минут` или `1.5 часа` (или /cancel).", reply_markup=keyboard)
         return
 
     new_trigger_at = now + timedelta(minutes=minutes)
@@ -1354,6 +1399,10 @@ async def process_snooze_absolute_input(message: Message, state: FSMContext):
     data = await state.get_data()
     msg_text = data.get("reminder_text", "Напоминание")
     user_input = message.text.strip() if message.text else ""
+
+    if user_input.lower() in ["/cancel", "cancel", "отмена", "❌ отмена", "быть отменено", "🔙 отмена"]:
+        await cmd_cancel_snooze(message, state)
+        return
 
     now = get_now()
     target_dt = parse_absolute_datetime(user_input, now)
@@ -1374,7 +1423,10 @@ async def process_snooze_absolute_input(message: Message, state: FSMContext):
             logger.error(f"LLM fallback error for absolute snooze: {e}")
 
     if target_dt is None:
-        await message.answer("⚠️ Не удалось распознать время. Попробуйте написать, например: `18:00`, `в 15:30` или `завтра в 10:00` (или `/cancel`).")
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_snooze")]
+        ])
+        await message.answer("⚠️ Не удалось распознать время. Попробуйте написать, например: `18:00`, `в 15:30` или `завтра в 10:00` (или /cancel).", reply_markup=keyboard)
         return
 
     scheduler_service.schedule_reminder(

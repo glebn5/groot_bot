@@ -34,7 +34,6 @@ async def main():
     dp.update.outer_middleware(AuthMiddleware())
 
     # Register Router handlers
-    dp.include_router(common.router)
     dp.include_router(settings_handler.router)
     dp.include_router(notes_handler.router)
     dp.include_router(goals_handler.router)
@@ -42,6 +41,7 @@ async def main():
     dp.include_router(text.router)
     dp.include_router(voice.router)
     dp.include_router(media.router)
+    dp.include_router(common.router)
 
     # Set Telegram bot menu commands
     from aiogram.types import BotCommand
@@ -52,6 +52,7 @@ async def main():
         BotCommand(command="habits", description="🔁 Привычки и повторы"),
         BotCommand(command="notes", description="📝 Мои заметки"),
         BotCommand(command="settings", description="⚙️ Настройки и ключи"),
+        BotCommand(command="cancel", description="❌ Отменить текущее действие"),
         BotCommand(command="help", description="💡 Инструкция по работе")
     ])
 
