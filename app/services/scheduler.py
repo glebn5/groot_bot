@@ -41,6 +41,33 @@ def get_reminder_inline_keyboard(snooze_minutes: Optional[int] = None) -> Inline
     return keyboard
 
 
+def is_in_quiet_hours() -> bool:
+    """
+    Checks if current time falls within quiet hours (Do Not Disturb interval).
+    If ALLOW_NIGHT_NOTIFICATIONS is True, quiet hours are disabled (returns False).
+    """
+    if getattr(settings, "ALLOW_NIGHT_NOTIFICATIONS", False):
+        return False
+
+    now_time = get_now().time()
+    start_str = getattr(settings, "QUIET_HOURS_START", "23:00")
+    end_str = getattr(settings, "QUIET_HOURS_END", "08:00")
+
+    try:
+        start_h, start_m = map(int, start_str.split(":"))
+        end_h, end_m = map(int, end_str.split(":"))
+        start_time = datetime.min.time().replace(hour=start_h, minute=start_m)
+        end_time = datetime.min.time().replace(hour=end_h, minute=end_m)
+
+        if start_time < end_time:
+            return start_time <= now_time < end_time
+        else:
+            return now_time >= start_time or now_time < end_time
+    except Exception as e:
+        logger.error(f"Error checking quiet hours: {e}")
+        return False
+
+
 async def send_reminder_notification(chat_id: int, message_text: str):
     """
     Callback function executed by APScheduler when trigger_at is reached.
@@ -86,6 +113,16 @@ class SchedulerService:
         if not self.scheduler.running:
             self.scheduler.start()
             logger.info(f"APScheduler initialized and started successfully with timezone {settings.TIMEZONE}.")
+            
+            # Setup hourly check for monthly goals reminders
+            from apscheduler.triggers.cron import CronTrigger
+            self.scheduler.add_job(
+                check_and_send_monthly_goals_reminders,
+                trigger=CronTrigger(minute=0, timezone=get_tz()),
+                id="monthly_goals_check",
+                replace_existing=True
+            )
+            logger.info("Monthly goals reminder check scheduled.")
 
     def stop(self):
         if self.scheduler.running:
@@ -253,6 +290,10 @@ async def send_periodic_schedule_summary(chat_id: int):
     """
     Callback function executed by APScheduler periodically to send current day schedule summary.
     """
+    if is_in_quiet_hours():
+        logger.info(f"Skipping periodic schedule summary for chat {chat_id} during quiet hours.")
+        return
+
     from app.handlers.text import render_schedule_view
     bot = Bot(
         token=settings.BOT_TOKEN,
@@ -268,6 +309,73 @@ async def send_periodic_schedule_summary(chat_id: int):
             await bot.send_message(chat_id=chat_id, text=formatted_msg, reply_markup=reply_markup, parse_mode=None)
     except Exception as e:
         logger.error(f"Error sending periodic schedule summary: {e}", exc_info=True)
+    finally:
+        await bot.session.close()
+
+
+async def check_and_send_monthly_goals_reminders():
+    """
+    Checks all users with enabled goal reminders and dispatches monthly goals checklist if current time matches.
+    """
+    if is_in_quiet_hours():
+        logger.info("Skipping monthly goals reminder check during quiet hours.")
+        return
+    from app.services.goals import goals_service
+    from app.handlers.goals import format_month_name
+
+    now = get_now()
+    day_codes = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+    current_day_code = day_codes[now.weekday()]
+    current_time_str = now.strftime("%H:%M")
+    current_month_str = now.strftime("%Y-%m")
+
+    enabled_users = await goals_service.get_all_users_with_enabled_reminders()
+    if not enabled_users:
+        return
+
+    bot = Bot(
+        token=settings.BOT_TOKEN,
+        default=DefaultBotProperties(parse_mode=ParseMode.MARKDOWN)
+    )
+    try:
+        for u in enabled_users:
+            user_id = u["user_id"]
+            days_str = u.get("days_of_week", "")
+            time_str = u.get("time_str", "10:00")
+
+            user_days = [d.strip() for d in days_str.split(",") if d.strip()]
+
+            if current_day_code in user_days and current_time_str == time_str:
+                goals = await goals_service.get_goals(user_id, current_month_str)
+                if not goals:
+                    continue
+
+                completed_count = sum(1 for g in goals if g["is_completed"])
+                total_count = len(goals)
+                month_name = format_month_name(current_month_str)
+
+                lines = [
+                    f"🎯 **Еженедельный чек-лист целей на {month_name}:**",
+                    f"📊 _Выполнено: {completed_count}/{total_count}_\n"
+                ]
+
+                for idx, g in enumerate(goals, 1):
+                    icon = "✅" if g["is_completed"] else "⬜"
+                    lines.append(f"{idx}. {icon} {g['goal_text']}")
+
+                lines.append("\n💪 _Двигайся к своим целям шаг за шагом! Каждая точка — это твой результат._")
+
+                keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="🎯 Открыть цели", callback_data=f"g_month:{current_month_str}")]
+                ])
+
+                msg_text = "\n".join(lines)
+                try:
+                    await bot.send_message(chat_id=user_id, text=msg_text, reply_markup=keyboard)
+                except Exception as ex:
+                    logger.error(f"Error sending goal reminder to user {user_id}: {ex}")
+    except Exception as e:
+        logger.error(f"Error in check_and_send_monthly_goals_reminders: {e}", exc_info=True)
     finally:
         await bot.session.close()
 

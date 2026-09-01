@@ -13,6 +13,7 @@ from app.services.obsidian import obsidian_service
 from app.services.llm import llm_service
 from app.services.calendar import calendar_service
 from app.services.scheduler import scheduler_service
+from app.services.goals import goals_service
 from app.utils.timezone import get_today
 from app.handlers.text import render_schedule_view
 
@@ -165,15 +166,23 @@ def render_settings_snooze():
     st = get_statuses()
     sched_interval = getattr(settings, "SCHEDULE_SUMMARY_INTERVAL_HOURS", 0)
     sched_status = f"Каждые {sched_interval} ч" if sched_interval > 0 else "Отключено"
+    allow_night = getattr(settings, "ALLOW_NIGHT_NOTIFICATIONS", False)
+    quiet_start = getattr(settings, "QUIET_HOURS_START", "23:00")
+    quiet_end = getattr(settings, "QUIET_HOURS_END", "08:00")
+
+    night_status = "🟢 24/7 (Разрешены)" if allow_night else f"🔴 Часы тишины ({quiet_start}–{quiet_end})"
 
     text = (
         "⏱ **Настройки напоминаний и таймеров**\n\n"
-        "Управление временем откладывания и периодическими сводками:\n\n"
+        "Управление временем откладывания, сводками, целями и ночным режимом:\n\n"
         f"• **Базовое откладывание:** `{st['snooze_min']} мин`\n"
         f"• **Авто-напоминание планов на день:** `{sched_status}`\n"
+        f"• **Ночные уведомления:** `{night_status}`\n"
         "• **Напоминания для задач без времени:** `08:00, 12:00, 15:00, 19:00`"
     )
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🎯 Цели на месяц", callback_data="settings_cat:goals")],
+        [InlineKeyboardButton(text=f"🌙 Ночной режим ({'24/7' if allow_night else f'Не беспокоить {quiet_start}-{quiet_end}'})", callback_data="settings_cat:quiet_hours")],
         [InlineKeyboardButton(text=f"⏱ Время откладывания ({st['snooze_min']} мин)", callback_data="set_key:DEFAULT_SNOOZE_MINUTES:snooze")],
         [InlineKeyboardButton(text=f"🔔 Периодичность планов ({sched_status})", callback_data="settings_cat:sched_summary")],
         [InlineKeyboardButton(text="🔙 Назад в настройки", callback_data="settings_cat:main")]
@@ -201,7 +210,162 @@ def render_settings_sched_summary():
     return text, keyboard
 
 
+DAY_NAMES_RU = {
+    "mon": "Пн", "tue": "Вт", "wed": "Ср", "thu": "Чт",
+    "fri": "Пт", "sat": "Сб", "sun": "Вс"
+}
+
+
+async def render_settings_goals(user_id: int):
+    st = await goals_service.get_goal_settings(user_id)
+    is_enabled = bool(st["is_enabled"])
+    status_str = "🟢 Включено" if is_enabled else "🔴 Отключено"
+
+    raw_days = st["days_of_week"].split(",") if st["days_of_week"] else []
+    days_formatted = ", ".join([DAY_NAMES_RU.get(d.strip(), d.strip()) for d in raw_days if d.strip()]) or "Не выбраны"
+    time_str = st["time_str"]
+
+    text = (
+        "🎯 **Настройки напоминаний целей на месяц**\n\n"
+        f"• **Статус рассылки:** {status_str}\n"
+        f"• **Дни недели:** `{days_formatted}`\n"
+        f"• **Время рассылки:** `{time_str}`\n\n"
+        "Выберите элемент для изменения:"
+    )
+
+    toggle_btn_text = "🔴 Отключить рассылку" if is_enabled else "🟢 Включить рассылку"
+    toggle_val = "0" if is_enabled else "1"
+
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=toggle_btn_text, callback_data=f"toggle_g_rem:{toggle_val}")],
+        [InlineKeyboardButton(text=f"📅 Дни недели ({days_formatted})", callback_data="settings_cat:goals_days")],
+        [InlineKeyboardButton(text=f"⏰ Время рассылки ({time_str})", callback_data="settings_cat:goals_time")],
+        [InlineKeyboardButton(text="🔙 Назад в Напоминания", callback_data="settings_cat:snooze")]
+    ])
+    return text, keyboard
+
+
+async def render_settings_goals_days(user_id: int):
+    st = await goals_service.get_goal_settings(user_id)
+    current_days = [d.strip() for d in st["days_of_week"].split(",") if d.strip()]
+
+    days_order = [("mon", "Пн"), ("tue", "Вт"), ("wed", "Ср"), ("thu", "Чт"), ("fri", "Пт"), ("sat", "Сб"), ("sun", "Вс")]
+
+    text = (
+        "📅 **Выбор дней рассылки целей**\n\n"
+        "Нажимайте на дни недели для включения или отключения:"
+    )
+
+    buttons = []
+    row1 = []
+    row2 = []
+    for code, name in days_order[:4]:
+        check = "✅" if code in current_days else "⬜"
+        row1.append(InlineKeyboardButton(text=f"{check} {name}", callback_data=f"toggle_g_day:{code}"))
+    for code, name in days_order[4:]:
+        check = "✅" if code in current_days else "⬜"
+        row2.append(InlineKeyboardButton(text=f"{check} {name}", callback_data=f"toggle_g_day:{code}"))
+
+    buttons.append(row1)
+    buttons.append(row2)
+    buttons.append([InlineKeyboardButton(text="🔙 Назад к настройкам целей", callback_data="settings_cat:goals")])
+
+    return text, InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+async def render_settings_goals_time(user_id: int):
+    st = await goals_service.get_goal_settings(user_id)
+    current_time = st["time_str"]
+
+    text = (
+        "⏰ **Выбор времени рассылки целей**\n\n"
+        f"Текущее время: **{current_time}**\n"
+        "Выберите удобное время:"
+    )
+
+    times = ["08:00", "09:00", "10:00", "12:00", "18:00", "20:00"]
+    buttons = []
+    row = []
+    for t_str in times:
+        check = "✅ " if t_str == current_time else ""
+        row.append(InlineKeyboardButton(text=f"{check}{t_str}", callback_data=f"set_g_time:{t_str}"))
+        if len(row) == 3:
+            buttons.append(row)
+            row = []
+    if row:
+        buttons.append(row)
+
+    buttons.append([InlineKeyboardButton(text="🔙 Назад к настройкам целей", callback_data="settings_cat:goals")])
+
+    return text, InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def render_settings_quiet_hours():
+    allow_night = getattr(settings, "ALLOW_NIGHT_NOTIFICATIONS", False)
+    quiet_start = getattr(settings, "QUIET_HOURS_START", "23:00")
+    quiet_end = getattr(settings, "QUIET_HOURS_END", "08:00")
+
+    status_str = "🟢 Включены 24/7 (приходят и ночью)" if allow_night else f"🔴 Часы тишины ({quiet_start}–{quiet_end})"
+
+    text = (
+        "🌙 **Настройка Ночного Режима (Часы Тишины)**\n\n"
+        f"• **Статус ночных рассылок:** {status_str}\n"
+        f"• **Интервал тишины:** с `{quiet_start}` до `{quiet_end}`\n\n"
+        "_(При ваших личных обращениях бот всегда отвечает мгновенно! Часы тишины действуют только на фоновые автоматические рассылки)_"
+    )
+
+    toggle_btn_text = "🔴 Заблокировать ночью" if allow_night else "🟢 Разрешить 24/7"
+    toggle_val = "0" if allow_night else "1"
+
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=toggle_btn_text, callback_data=f"toggle_night_notif:{toggle_val}")],
+        [InlineKeyboardButton(text=f"🌙 Начало тишины ({quiet_start})", callback_data="settings_cat:quiet_start")],
+        [InlineKeyboardButton(text=f"☀️ Конец тишины ({quiet_end})", callback_data="settings_cat:quiet_end")],
+        [InlineKeyboardButton(text="🔙 Назад в Напоминания", callback_data="settings_cat:snooze")]
+    ])
+    return text, keyboard
+
+
+def render_settings_quiet_start():
+    quiet_start = getattr(settings, "QUIET_HOURS_START", "23:00")
+    text = (
+        "🌙 **Выбор времени начала Часов Тишины**\n\n"
+        f"Текущее время начала: **{quiet_start}**\n"
+        "Выберите время, начиная с которого авто-уведомления не будут беспокоить:"
+    )
+    times = ["21:00", "22:00", "23:00", "00:00"]
+    buttons = []
+    row = []
+    for t_str in times:
+        check = "✅ " if t_str == quiet_start else ""
+        row.append(InlineKeyboardButton(text=f"{check}{t_str}", callback_data=f"set_quiet_start:{t_str}"))
+    buttons.append(row)
+    buttons.append([InlineKeyboardButton(text="✍️ Указать своё время", callback_data="set_key:QUIET_HOURS_START:quiet_hours")])
+    buttons.append([InlineKeyboardButton(text="🔙 Назад в Ночной режим", callback_data="settings_cat:quiet_hours")])
+    return text, InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def render_settings_quiet_end():
+    quiet_end = getattr(settings, "QUIET_HOURS_END", "08:00")
+    text = (
+        "☀️ **Выбор времени окончания Часов Тишины**\n\n"
+        f"Текущее время окончания: **{quiet_end}**\n"
+        "Выберите время, до которого авто-уведомления не приходят:"
+    )
+    times = ["06:00", "07:00", "08:00", "09:00"]
+    buttons = []
+    row = []
+    for t_str in times:
+        check = "✅ " if t_str == quiet_end else ""
+        row.append(InlineKeyboardButton(text=f"{check}{t_str}", callback_data=f"set_quiet_end:{t_str}"))
+    buttons.append(row)
+    buttons.append([InlineKeyboardButton(text="✍️ Указать своё время", callback_data="set_key:QUIET_HOURS_END:quiet_hours")])
+    buttons.append([InlineKeyboardButton(text="🔙 Назад в Ночной режим", callback_data="settings_cat:quiet_hours")])
+    return text, InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
 @router.message(Command("settings"))
+@router.message(F.text.in_({"⚙️ Настройки", "Настройки"}))
 async def cmd_settings(message: Message, state: FSMContext):
     await state.clear()
     text, keyboard = render_settings_main()
@@ -222,6 +386,18 @@ async def process_settings_category(callback: CallbackQuery, state: FSMContext):
         text, keyboard = render_settings_snooze()
     elif cat == "sched_summary":
         text, keyboard = render_settings_sched_summary()
+    elif cat == "goals":
+        text, keyboard = await render_settings_goals(callback.from_user.id)
+    elif cat == "goals_days":
+        text, keyboard = await render_settings_goals_days(callback.from_user.id)
+    elif cat == "goals_time":
+        text, keyboard = await render_settings_goals_time(callback.from_user.id)
+    elif cat == "quiet_hours":
+        text, keyboard = render_settings_quiet_hours()
+    elif cat == "quiet_start":
+        text, keyboard = render_settings_quiet_start()
+    elif cat == "quiet_end":
+        text, keyboard = render_settings_quiet_end()
     else:
         text, keyboard = render_settings_main()
 
@@ -294,6 +470,108 @@ async def process_upload_sa_json(callback: CallbackQuery, state: FSMContext):
     except Exception:
         await callback.message.answer(prompt_msg, reply_markup=keyboard, parse_mode="Markdown")
     await callback.answer()
+
+
+@router.callback_query(F.data.startswith("toggle_g_rem:"))
+async def process_toggle_goals_reminder(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
+    val_str = callback.data.split(":", 1)[1]
+    is_enabled = bool(int(val_str))
+    await goals_service.update_goal_settings(callback.from_user.id, is_enabled=is_enabled)
+
+    status_msg = "включена 🟢" if is_enabled else "отключена 🔴"
+    await callback.answer(f"Рассылка целей {status_msg}")
+
+    text, keyboard = await render_settings_goals(callback.from_user.id)
+    try:
+        await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="Markdown")
+    except Exception:
+        await callback.message.answer(text, reply_markup=keyboard, parse_mode="Markdown")
+
+
+@router.callback_query(F.data.startswith("toggle_g_day:"))
+async def process_toggle_goals_day(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
+    day_code = callback.data.split(":", 1)[1]
+    st = await goals_service.get_goal_settings(callback.from_user.id)
+    current_days = [d.strip() for d in st["days_of_week"].split(",") if d.strip()]
+
+    if day_code in current_days:
+        current_days.remove(day_code)
+    else:
+        current_days.append(day_code)
+
+    new_days_str = ",".join(current_days)
+    await goals_service.update_goal_settings(callback.from_user.id, days_of_week=new_days_str)
+    await callback.answer("Дни рассылки обновлены ✨")
+
+    text, keyboard = await render_settings_goals_days(callback.from_user.id)
+    try:
+        await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="Markdown")
+    except Exception:
+        await callback.message.answer(text, reply_markup=keyboard, parse_mode="Markdown")
+
+
+@router.callback_query(F.data.startswith("set_g_time:"))
+async def process_set_goals_time(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
+    time_str = callback.data.split(":", 1)[1]
+    await goals_service.update_goal_settings(callback.from_user.id, time_str=time_str)
+    await callback.answer(f"Время рассылки установлено на {time_str} ⏰")
+
+    text, keyboard = await render_settings_goals(callback.from_user.id)
+    try:
+        await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="Markdown")
+    except Exception:
+        await callback.message.answer(text, reply_markup=keyboard, parse_mode="Markdown")
+
+
+@router.callback_query(F.data.startswith("toggle_night_notif:"))
+async def process_toggle_night_notif(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
+    val_str = callback.data.split(":", 1)[1]
+    is_allow = bool(int(val_str))
+    update_env_file("ALLOW_NIGHT_NOTIFICATIONS", str(is_allow))
+    settings.ALLOW_NIGHT_NOTIFICATIONS = is_allow
+
+    status_msg = "разрешены 24/7 🟢" if is_allow else "заблокированы ночью 🔴"
+    await callback.answer(f"Ночные уведомления {status_msg}")
+
+    text, keyboard = render_settings_quiet_hours()
+    try:
+        await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="Markdown")
+    except Exception:
+        await callback.message.answer(text, reply_markup=keyboard, parse_mode="Markdown")
+
+
+@router.callback_query(F.data.startswith("set_quiet_start:"))
+async def process_set_quiet_start(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
+    t_str = callback.data.split(":", 1)[1]
+    update_env_file("QUIET_HOURS_START", t_str)
+    settings.QUIET_HOURS_START = t_str
+    await callback.answer(f"Начало тишины установлено на {t_str} 🌙")
+
+    text, keyboard = render_settings_quiet_hours()
+    try:
+        await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="Markdown")
+    except Exception:
+        await callback.message.answer(text, reply_markup=keyboard, parse_mode="Markdown")
+
+
+@router.callback_query(F.data.startswith("set_quiet_end:"))
+async def process_set_quiet_end(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
+    t_str = callback.data.split(":", 1)[1]
+    update_env_file("QUIET_HOURS_END", t_str)
+    settings.QUIET_HOURS_END = t_str
+    await callback.answer(f"Конец тишины установлен на {t_str} ☀️")
+
+    text, keyboard = render_settings_quiet_hours()
+    try:
+        await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="Markdown")
+    except Exception:
+        await callback.message.answer(text, reply_markup=keyboard, parse_mode="Markdown")
 
 
 @router.message(Command("close"))

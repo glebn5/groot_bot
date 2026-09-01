@@ -24,6 +24,9 @@ class Settings(BaseSettings):
     TIMEZONE: str = "Europe/Moscow"
     DEFAULT_SNOOZE_MINUTES: int = 5
     SCHEDULE_SUMMARY_INTERVAL_HOURS: int = 0
+    ALLOW_NIGHT_NOTIFICATIONS: bool = False
+    QUIET_HOURS_START: str = "23:00"
+    QUIET_HOURS_END: str = "08:00"
 
     model_config = SettingsConfigDict(
         env_file=".env",

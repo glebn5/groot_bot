@@ -37,6 +37,7 @@ async def render_notes_view(user_id: int):
 
 
 @router.message(Command("notes"))
+@router.message(F.text.in_({"📝 Мои заметки", "Мои заметки"}))
 async def cmd_notes(message: Message):
     text, reply_markup = await render_notes_view(message.from_user.id)
     await message.answer(text, reply_markup=reply_markup, parse_mode="Markdown")

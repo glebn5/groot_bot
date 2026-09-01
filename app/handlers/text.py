@@ -17,8 +17,10 @@ from app.services.calendar import calendar_service
 from app.services.scheduler import scheduler_service, get_reminder_inline_keyboard
 from app.services.notes import notes_service
 from app.services.tasks import tasks_service
+from app.services.goals import goals_service
 from app.services.context import context_service
 from app.handlers.notes import render_notes_view
+from app.handlers.goals import render_goals_view
 from app.utils.timezone import get_today, get_now, get_tz
 
 logger = logging.getLogger(__name__)
@@ -360,6 +362,18 @@ async def execute_action_pipeline(bot: Bot, chat_id: int, action: ParsedAction, 
     # 0. Handle Note Queries ("покажи заметки", "какие у меня заметки")
     if action.is_note_query:
         text, keyboard = await render_notes_view(chat_id)
+        return text, keyboard
+
+    # 0. Handle Monthly Goals Add & Query ("поставь цель...", "цели на месяц")
+    if action.is_goal_add and action.goal_text:
+        target_month = action.target_month or get_today().strftime("%Y-%m")
+        await goals_service.add_goal(chat_id, action.goal_text, target_month)
+        text, keyboard = await render_goals_view(chat_id, target_month)
+        return text, keyboard
+
+    if action.is_goals_query:
+        target_month = action.target_month or get_today().strftime("%Y-%m")
+        text, keyboard = await render_goals_view(chat_id, target_month)
         return text, keyboard
 
     # 0. Handle Search Queries ("когда парикмахерская?", "когда врач?")
@@ -1343,6 +1357,14 @@ async def process_snooze_absolute_input(message: Message, state: FSMContext):
     time_str = target_dt.strftime(date_format)
     await state.clear()
     await message.answer(f"💤 Напоминание **\"{msg_text}\"** перенесено на **{time_str}** ⏰", parse_mode="Markdown")
+
+
+@router.message(Command("today"))
+@router.message(F.text.in_({"📅 Планы на сегодня", "Планы на сегодня"}))
+async def cmd_today(message: Message):
+    today = get_today()
+    text, reply_markup = await render_schedule_view(message.chat.id, today, today)
+    await message.answer(text, reply_markup=reply_markup, parse_mode="Markdown")
 
 
 @router.message(F.text & ~F.text.startswith("/"))
