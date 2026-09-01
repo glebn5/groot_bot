@@ -1,7 +1,7 @@
 import os
 import logging
 from typing import Optional, List, Dict, Any
-from datetime import datetime
+from datetime import datetime, timedelta
 from aiogram import Bot
 from aiogram.enums import ParseMode
 from aiogram.client.default import DefaultBotProperties
@@ -285,6 +285,84 @@ class SchedulerService:
         except Exception as e:
             logger.error(f"Failed to setup periodic schedule summary for chat {chat_id}: {e}")
 
+    def schedule_recurring_task_job(self, task: Dict[str, Any]):
+        """
+        Schedules or updates an APScheduler job for a recurring task.
+        """
+        user_id = task["user_id"]
+        task_id = task["id"]
+        title = task["title"]
+        repeat_type = task["repeat_type"]
+        cron_expr = task.get("cron_expression")
+        interval_days = task.get("interval_days")
+        target_time = task.get("target_time") or "10:00"
+
+        job_id = f"recurring_{user_id}_{task_id}"
+
+        try:
+            if self.scheduler.get_job(job_id):
+                self.scheduler.remove_job(job_id)
+
+            tz = get_tz()
+            hour, minute = map(int, target_time.split(":"))
+
+            if repeat_type == "daily":
+                from apscheduler.triggers.cron import CronTrigger
+                trigger = CronTrigger(hour=hour, minute=minute, timezone=tz)
+            elif repeat_type == "weekly":
+                from apscheduler.triggers.cron import CronTrigger
+                days_str = cron_expr or "mon,tue,wed,thu,fri,sat,sun"
+                trigger = CronTrigger(day_of_week=days_str, hour=hour, minute=minute, timezone=tz)
+            elif repeat_type == "interval_days" and interval_days:
+                from apscheduler.triggers.interval import IntervalTrigger
+                now = get_now()
+                start_dt = datetime.combine(now.date(), datetime.min.time().replace(hour=hour, minute=minute), tzinfo=tz)
+                if start_dt <= now:
+                    start_dt += timedelta(days=1)
+                trigger = IntervalTrigger(days=interval_days, start_date=start_dt, timezone=tz)
+            elif repeat_type == "custom_cron" and cron_expr:
+                from apscheduler.triggers.cron import CronTrigger
+                trigger = CronTrigger.from_crontab(cron_expr, timezone=tz)
+            else:
+                from apscheduler.triggers.cron import CronTrigger
+                trigger = CronTrigger(hour=hour, minute=minute, timezone=tz)
+
+            self.scheduler.add_job(
+                send_recurring_task_notification,
+                trigger=trigger,
+                id=job_id,
+                args=[user_id, task_id, title],
+                replace_existing=True
+            )
+            logger.info(f"Scheduled recurring task job {job_id} ('{title}') with trigger {trigger}")
+        except Exception as e:
+            logger.error(f"Failed to schedule recurring task job {job_id}: {e}", exc_info=True)
+
+    def unschedule_recurring_task_job(self, task_id: int, user_id: int):
+        """
+        Removes a recurring task job from APScheduler.
+        """
+        job_id = f"recurring_{user_id}_{task_id}"
+        try:
+            if self.scheduler.get_job(job_id):
+                self.scheduler.remove_job(job_id)
+                logger.info(f"Unscheduled recurring task job {job_id}")
+        except Exception as e:
+            logger.error(f"Failed to unschedule recurring task job {job_id}: {e}")
+
+    async def load_all_recurring_tasks(self):
+        """
+        Loads all active recurring tasks from SQLite into APScheduler on startup.
+        """
+        from app.services.recurring import recurring_service
+        try:
+            tasks = await recurring_service.get_all_active_tasks()
+            logger.info(f"Loading {len(tasks)} active recurring tasks into APScheduler...")
+            for task in tasks:
+                self.schedule_recurring_task_job(task)
+        except Exception as e:
+            logger.error(f"Failed to load recurring tasks on startup: {e}", exc_info=True)
+
 
 async def send_periodic_schedule_summary(chat_id: int):
     """
@@ -376,6 +454,45 @@ async def check_and_send_monthly_goals_reminders():
                     logger.error(f"Error sending goal reminder to user {user_id}: {ex}")
     except Exception as e:
         logger.error(f"Error in check_and_send_monthly_goals_reminders: {e}", exc_info=True)
+    finally:
+        await bot.session.close()
+
+
+async def send_recurring_task_notification(user_id: int, task_id: int, title: str):
+    """
+    Callback executed when a recurring task / habit trigger fires.
+    """
+    if is_in_quiet_hours():
+        logger.info(f"Skipping recurring task notification #{task_id} for user {user_id} during quiet hours.")
+        return
+
+    from app.services.recurring import recurring_service
+    await recurring_service.update_last_triggered(task_id)
+
+    bot = Bot(
+        token=settings.BOT_TOKEN,
+        default=DefaultBotProperties(parse_mode=ParseMode.MARKDOWN)
+    )
+    try:
+        msg_text = (
+            f"🔁 **Повторяющаяся задача / Привычка:**\n\n"
+            f"📌 **{title}**\n\n"
+            f"Не забудь выполнить!"
+        )
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(text="✅ Сделано", callback_data=f"rec_done:{task_id}"),
+                InlineKeyboardButton(text="⏳ Напомнить 15м", callback_data=f"rec_snooze:{task_id}"),
+                InlineKeyboardButton(text="❌ Пропустить", callback_data=f"rec_skip:{task_id}")
+            ]
+        ])
+
+        try:
+            await bot.send_message(chat_id=user_id, text=msg_text, reply_markup=keyboard)
+        except Exception:
+            await bot.send_message(chat_id=user_id, text=f"🔁 Привычка:\n\n{title}", reply_markup=keyboard, parse_mode=None)
+    except Exception as e:
+        logger.error(f"Error sending recurring task notification for task #{task_id}: {e}", exc_info=True)
     finally:
         await bot.session.close()
 

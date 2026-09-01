@@ -18,9 +18,11 @@ from app.services.scheduler import scheduler_service, get_reminder_inline_keyboa
 from app.services.notes import notes_service
 from app.services.tasks import tasks_service
 from app.services.goals import goals_service
+from app.services.recurring import recurring_service
 from app.services.context import context_service
 from app.handlers.notes import render_notes_view
 from app.handlers.goals import render_goals_view
+from app.handlers.habits import render_habits_view
 from app.utils.timezone import get_today, get_now, get_tz
 
 logger = logging.getLogger(__name__)
@@ -374,6 +376,34 @@ async def execute_action_pipeline(bot: Bot, chat_id: int, action: ParsedAction, 
     if action.is_goals_query:
         target_month = action.target_month or get_today().strftime("%Y-%m")
         text, keyboard = await render_goals_view(chat_id, target_month)
+        return text, keyboard
+
+    # 0. Handle Recurring Task / Habit Creation & Query
+    if action.is_recurring_add and action.recurring_title:
+        title = action.recurring_title.strip()
+        r_type = action.repeat_type or "daily"
+        cron_expr = ",".join(action.repeat_days) if action.repeat_days else None
+        interval_days = action.repeat_interval
+        target_time = action.repeat_time or "10:00"
+
+        task_id = await recurring_service.add_recurring_task(
+            user_id=chat_id,
+            title=title,
+            repeat_type=r_type,
+            cron_expression=cron_expr,
+            interval_days=interval_days,
+            target_time=target_time
+        )
+        if task_id > 0:
+            task = await recurring_service.get_task_by_id(task_id, chat_id)
+            if task:
+                scheduler_service.schedule_recurring_task_job(task)
+
+        text, keyboard = await render_habits_view(chat_id)
+        return text, keyboard
+
+    if action.is_recurring_query:
+        text, keyboard = await render_habits_view(chat_id)
         return text, keyboard
 
     # 0. Handle Search Queries ("когда парикмахерская?", "когда врач?")

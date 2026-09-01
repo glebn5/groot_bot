@@ -9,7 +9,10 @@ def get_main_reply_keyboard() -> ReplyKeyboardMarkup:
                 KeyboardButton(text="🎯 Цели на месяц")
             ],
             [
-                KeyboardButton(text="📝 Мои заметки"),
+                KeyboardButton(text="🔁 Привычки"),
+                KeyboardButton(text="📝 Мои заметки")
+            ],
+            [
                 KeyboardButton(text="⚙️ Настройки")
             ]
         ],
