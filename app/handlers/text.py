@@ -101,7 +101,7 @@ async def render_schedule_view(chat_id: int, start_date: date, end_date: Optiona
     local_tasks = await tasks_service.get_tasks_for_date_range(chat_id, start_date, end_date)
     for t in local_tasks:
         status_icon = "✅" if t.get("is_completed") else "▫️"
-        text = t['task_text'].strip()
+        text = str(t['task_text'] or "").strip()
 
         match = re.search(r'\b([0-1]?\d|2[0-3]):([0-5]\d)\b', text)
         if match:
@@ -116,16 +116,16 @@ async def render_schedule_view(chat_id: int, start_date: date, end_date: Optiona
     reminders = scheduler_service.get_reminders_for_date_range(start_date, end_date, chat_id=chat_id)
     for r in reminders:
         formatted_item = format_reminder_display_text(r['date'], r['time'], r['message'])
-        formatted_item = formatted_item.replace(f"{r['date']} в ", "")
-        time_part = r['time']
+        formatted_item = str(formatted_item or "").replace(f"{r['date']} в ", "")
+        time_part = str(r['time'] or "")
         msg_body = re.sub(r'^\d{2}:\d{2}\s*—\s*', '', formatted_item).strip()
         timed_items.append((time_part, "▫️", msg_body))
 
     # 3) Get Google Calendar events for date range
     events = await calendar_service.get_events_for_date_range(start_date, end_date)
     for ev in events:
-        summary = ev.get('summary', 'Без названия')
-        start_dt = ev.get('start', {}).get('dateTime', '')
+        summary = str(ev.get('summary') or 'Без названия')
+        start_dt = str(ev.get('start', {}).get('dateTime', '') or '')
         if len(start_dt) >= 16:
             time_part = start_dt[11:16]
             timed_items.append((time_part, "▫️", summary))
@@ -135,7 +135,7 @@ async def render_schedule_view(chat_id: int, start_date: date, end_date: Optiona
     # 4) Get Obsidian tasks
     obs_tasks = await obsidian_service.get_daily_tasks(start_date)
     for t in obs_tasks:
-        clean_obs = t.strip()
+        clean_obs = str(t or "").strip()
         if clean_obs.startswith("- [x]") or clean_obs.startswith("* [x]"):
             icon = "✅"
             clean_obs = clean_obs[5:].strip()
@@ -153,7 +153,7 @@ async def render_schedule_view(chat_id: int, start_date: date, end_date: Optiona
     dedup_timed = []
     seen_timed = set()
     for t_time, icon, text in timed_items:
-        key = (t_time, text.lower())
+        key = (t_time, str(text).lower())
         if key not in seen_timed:
             seen_timed.add(key)
             dedup_timed.append((t_time, icon, text))
@@ -161,8 +161,8 @@ async def render_schedule_view(chat_id: int, start_date: date, end_date: Optiona
     dedup_untimed = []
     seen_untimed = set()
     for icon, text in untimed_items:
-        key = text.lower()
-        if key not in seen_untimed and key not in [t[2].lower() for t in dedup_timed]:
+        key = str(text).lower()
+        if key not in seen_untimed and key not in [str(t[2]).lower() for t in dedup_timed]:
             seen_untimed.add(key)
             dedup_untimed.append((icon, text))
 
