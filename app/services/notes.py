@@ -2,7 +2,7 @@ import os
 import sqlite3
 import logging
 from datetime import datetime
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from app.config import settings
 from app.utils.timezone import get_now
 
@@ -72,6 +72,41 @@ class NotesService:
         except Exception as e:
             logger.error(f"Error fetching notes for user_id={user_id}: {e}", exc_info=True)
             return []
+
+    async def get_note_by_id(self, note_id: int, user_id: int) -> Optional[Dict[str, Any]]:
+        """
+        Retrieves a single note by ID for user_id.
+        """
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                conn.row_factory = sqlite3.Row
+                cursor = conn.cursor()
+                cursor.execute(
+                    "SELECT id, content, created_at FROM user_notes WHERE id = ? AND user_id = ?",
+                    (note_id, user_id)
+                )
+                row = cursor.fetchone()
+                return dict(row) if row else None
+        except Exception as e:
+            logger.error(f"Error fetching note #{note_id} for user_id={user_id}: {e}", exc_info=True)
+            return None
+
+    async def update_note(self, note_id: int, user_id: int, new_content: str) -> bool:
+        """
+        Updates the content of a note by ID for user_id.
+        """
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "UPDATE user_notes SET content = ? WHERE id = ? AND user_id = ?",
+                    (new_content.strip(), note_id, user_id)
+                )
+                conn.commit()
+                return cursor.rowcount > 0
+        except Exception as e:
+            logger.error(f"Error updating note #{note_id}: {e}", exc_info=True)
+            return False
 
     async def delete_note(self, note_id: int, user_id: int) -> bool:
         """
