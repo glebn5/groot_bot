@@ -46,7 +46,7 @@ class TaskTimePromptForm(StatesGroup):
     waiting_for_time = State()
 
 
-def format_reminder_display_text(r_date_str: str, r_time_str: str, message: str) -> str:
+def format_reminder_display_text(r_date_str: str, r_time_str: str, message: Any) -> str:
     """
     Formats a reminder string for display. If the reminder message specifies relative offsets
     like 'за час' or 'за пол часа' or 'за N минут', calculates and appends the target event time.
@@ -54,7 +54,9 @@ def format_reminder_display_text(r_date_str: str, r_time_str: str, message: str)
     import re
     from datetime import datetime, timedelta
 
-    msg = message.strip()
+    r_date_str = str(r_date_str or "")
+    r_time_str = str(r_time_str or "")
+    msg = str(message or "").strip()
     if "точное время" in msg or "(в " in msg:
         return f"{r_date_str} в {r_time_str} — {msg}"
 
