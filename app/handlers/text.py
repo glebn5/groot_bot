@@ -582,8 +582,22 @@ async def execute_action_pipeline(bot: Bot, chat_id: int, action: ParsedAction, 
     # 0. Save Quick Note ONLY if explicitly requested
     if action.is_note_save and action.note_content:
         try:
-            await notes_service.add_note(user_id=chat_id, content=action.note_content)
-            status_notes.append(f"📌 Заметка «{action.note_content}» сохранена!")
+            note_id = await notes_service.add_note(user_id=chat_id, content=action.note_content)
+            folders = await notes_service.get_folders(chat_id)
+            if folders:
+                buttons = []
+                for f in folders:
+                    buttons.append([InlineKeyboardButton(text=f"📁 {f['name']}", callback_data=f"set_n_folder:{note_id}:{f['id']}")])
+                buttons.append([InlineKeyboardButton(text="📥 Оставить без раздела", callback_data=f"set_n_folder:{note_id}:0")])
+                keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
+                
+                prompt_text = (
+                    f"📌 Заметка **«{action.note_content}»** сохранена!\n\n"
+                    f"📂 **В какой раздел её поместить?**"
+                )
+                return prompt_text, keyboard
+            else:
+                status_notes.append(f"📌 Заметка «{action.note_content}» сохранена!")
         except Exception as e:
             logger.error(f"Error saving note: {e}")
             status_notes.append(f"⚠️ Ошибка сохранения заметки: {e}")

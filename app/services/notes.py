@@ -237,6 +237,23 @@ class NotesService:
             logger.error(f"Error updating note #{note_id}: {e}", exc_info=True)
             return False
 
+    async def move_note_to_folder(self, note_id: int, user_id: int, target_folder_id: Optional[int]) -> bool:
+        """
+        Moves a note to a new target folder (or NULL if unsorted).
+        """
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "UPDATE user_notes SET folder_id = ? WHERE id = ? AND user_id = ?",
+                    (target_folder_id, note_id, user_id)
+                )
+                conn.commit()
+                return cursor.rowcount > 0
+        except Exception as e:
+            logger.error(f"Error moving note #{note_id} to folder {target_folder_id}: {e}", exc_info=True)
+            return False
+
     async def delete_note(self, note_id: int, user_id: int) -> bool:
         """
         Deletes a specific note by ID for user_id.

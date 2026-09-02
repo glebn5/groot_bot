@@ -179,9 +179,16 @@ async def render_note_detail_view(user_id: int, note_id: int, folder_id: int = 0
         ])
         return text, keyboard
 
+    folder_name = "Без раздела"
+    if note.get("folder_id"):
+        f_info = await notes_service.get_folder_by_id(note["folder_id"], user_id)
+        if f_info:
+            folder_name = f_info["name"]
+
     text = (
         f"📌 **Управление заметкой #{idx}:**\n\n"
         f"📝 **{note['content']}**\n\n"
+        f"📁 Раздел: **{folder_name}**\n"
         f"⏱ Создано: _{note['created_at']}_"
     )
 
@@ -189,6 +196,9 @@ async def render_note_detail_view(user_id: int, note_id: int, folder_id: int = 0
         [
             InlineKeyboardButton(text="✏️ Изменить", callback_data=f"edit_n_prompt:{note_id}:{folder_id}:{page}:{idx}"),
             InlineKeyboardButton(text="🗑 Удалить", callback_data=f"del_n:{note_id}:{folder_id}:{page}")
+        ],
+        [
+            InlineKeyboardButton(text="📁 Переместить в раздел", callback_data=f"move_n_prompt:{note_id}:{folder_id}:{page}:{idx}")
         ],
         [
             InlineKeyboardButton(text="🔙 Назад к заметкам", callback_data=f"n_page:{folder_id}:{page}")
@@ -428,6 +438,30 @@ async def process_add_note_prompt(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
 
 
+@router.callback_query(F.data.startswith("set_n_folder:"))
+async def process_set_note_folder(callback: CallbackQuery):
+    parts = callback.data.split(":")
+    note_id = int(parts[1])
+    target_folder_id = int(parts[2])
+
+    actual_target = target_folder_id if target_folder_id > 0 else None
+    success = await notes_service.move_note_to_folder(note_id, callback.from_user.id, actual_target)
+
+    target_name = "Без раздела"
+    if target_folder_id > 0:
+        f_info = await notes_service.get_folder_by_id(target_folder_id, callback.from_user.id)
+        if f_info:
+            target_name = f_info["name"]
+
+    if success:
+        await callback.answer(f"Заметка помещена в раздел «{target_name}» 📦")
+    else:
+        await callback.answer("Заметка осталась без раздела.")
+
+    text, reply_markup = await render_folders_view(callback.from_user.id)
+    await safe_edit_markdown(callback.message, text, reply_markup=reply_markup)
+
+
 @router.message(Command("cancel"), NoteAddForm.waiting_for_content)
 @router.message(F.text.in_({"cancel", "/cancel", "отмена", "Отмена", "❌ Отмена", "🔙 Отмена"}), NoteAddForm.waiting_for_content)
 async def process_cancel_add_note(message: Message, state: FSMContext):
@@ -453,7 +487,24 @@ async def process_save_note_content(message: Message, state: FSMContext):
     await state.clear()
     if content:
         actual_folder = folder_id if folder_id > 0 else None
-        await notes_service.add_note(message.from_user.id, content, folder_id=actual_folder)
+        note_id = await notes_service.add_note(message.from_user.id, content, folder_id=actual_folder)
+
+        if folder_id == 0:
+            folders = await notes_service.get_folders(message.from_user.id)
+            if folders:
+                buttons = []
+                for f in folders:
+                    buttons.append([InlineKeyboardButton(text=f"📁 {f['name']}", callback_data=f"set_n_folder:{note_id}:{f['id']}")])
+                buttons.append([InlineKeyboardButton(text="📥 Оставить без раздела", callback_data=f"set_n_folder:{note_id}:0")])
+                keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
+                
+                text = (
+                    f"📌 Заметка **«{content}»** сохранена!\n\n"
+                    f"📂 **В какой раздел её поместить?**"
+                )
+                await safe_send_markdown(message, text, reply_markup=keyboard)
+                return
+
         await message.answer(f"📌 **Заметка сохранена!**\n_«{content}»_")
 
     text, reply_markup = await render_notes_view(message.from_user.id, folder_id=folder_id, page=1)
@@ -585,4 +636,71 @@ async def process_confirm_clear_folder(callback: CallbackQuery):
 
     await callback.answer("Заметки раздела очищены 🧹")
     text, reply_markup = await render_notes_view(callback.from_user.id, folder_id=folder_id, page=1)
+    await safe_edit_markdown(callback.message, text, reply_markup=reply_markup)
+
+
+# --- MOVE NOTE TO FOLDER HANDLERS ---
+
+@router.callback_query(F.data.startswith("move_n_prompt:"))
+async def process_move_note_prompt(callback: CallbackQuery):
+    parts = callback.data.split(":")
+    note_id = int(parts[1])
+    current_folder_id = int(parts[2]) if len(parts) > 2 else 0
+    page = int(parts[3]) if len(parts) > 3 else 1
+    idx = int(parts[4]) if len(parts) > 4 else 1
+
+    note = await notes_service.get_note_by_id(note_id, callback.from_user.id)
+    if not note:
+        await callback.answer("⚠️ Заметка не найдена.", show_alert=True)
+        return
+
+    folders = await notes_service.get_folders(callback.from_user.id)
+
+    text = (
+        f"📂 **Перемещение заметки #{idx} в другой раздел:**\n\n"
+        f"Заметка: **«{note['content']}»**\n\n"
+        f"Выберите целевой раздел:"
+    )
+
+    buttons = []
+    for f in folders:
+        f_id = f["id"]
+        if note.get("folder_id") == f_id:
+            continue
+        buttons.append([InlineKeyboardButton(text=f"📁 {f['name']}", callback_data=f"move_n_confirm:{note_id}:{f_id}:{current_folder_id}:{page}:{idx}")])
+
+    if note.get("folder_id") is not None:
+        buttons.append([InlineKeyboardButton(text="📥 Перенести в «Без раздела»", callback_data=f"move_n_confirm:{note_id}:0:{current_folder_id}:{page}:{idx}")])
+
+    buttons.append([InlineKeyboardButton(text="❌ Отмена", callback_data=f"select_n:{note_id}:{current_folder_id}:{page}:{idx}")])
+
+    keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
+    await safe_edit_markdown(callback.message, text, reply_markup=keyboard)
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("move_n_confirm:"))
+async def process_move_note_confirm(callback: CallbackQuery):
+    parts = callback.data.split(":")
+    note_id = int(parts[1])
+    target_folder_id = int(parts[2])
+    current_folder_id = int(parts[3]) if len(parts) > 3 else 0
+    page = int(parts[4]) if len(parts) > 4 else 1
+    idx = int(parts[5]) if len(parts) > 5 else 1
+
+    actual_target = target_folder_id if target_folder_id > 0 else None
+    success = await notes_service.move_note_to_folder(note_id, callback.from_user.id, actual_target)
+
+    target_name = "Без раздела"
+    if target_folder_id > 0:
+        f_info = await notes_service.get_folder_by_id(target_folder_id, callback.from_user.id)
+        if f_info:
+            target_name = f_info["name"]
+
+    if success:
+        await callback.answer(f"Заметка перенесена в «{target_name}» 📦")
+    else:
+        await callback.answer("⚠️ Не удалось переместить заметку.")
+
+    text, reply_markup = await render_note_detail_view(callback.from_user.id, note_id, current_folder_id, page, idx)
     await safe_edit_markdown(callback.message, text, reply_markup=reply_markup)
