@@ -775,6 +775,12 @@ def parse_target_date(user_input: str, base_date: date) -> Optional[date]:
         except ValueError:
             pass
 
+    if "позавчера" in text:
+        return base_date - timedelta(days=2)
+
+    if "вчера" in text:
+        return base_date - timedelta(days=1)
+
     if "послезавтра" in text:
         return base_date + timedelta(days=2)
 

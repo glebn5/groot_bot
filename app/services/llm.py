@@ -82,9 +82,10 @@ SYSTEM_PROMPT = """Ты — интеллектуальный ассистент 
 ```
 
 Правила извлечения:
-1. Расчет дат относительных дней ("сегодня", "завтра", "послезавтра", "в этот понедельник", "в следующую пятницу"):
+1. Расчет дат относительных дней ("сегодня", "вчера", "позавчера", "завтра", "послезавтра", "в этот понедельник", "в прошлый вторник", "в следующую пятницу"):
    - Все относительные даты рассчитываются СТРОГО относительно текущей даты сервера ({current_datetime}).
-   - День недели указан в параметрах сервера ({day_of_week}). Если пользователь пишет "в понедельник", "в эту среду" и т.д., выбирай ближайший СЛЕДУЮЩИЙ такой день недели относительно текущей даты сервера.
+   - "вчера" = текущая дата - 1 день. "позавчера" = текущая дата - 2 дня.
+   - День недели указан в параметрах сервера ({day_of_week}). Если пользователь пишет "в понедельник", "в эту среду" и т.д., выбирай ближайший СЛЕДУЮЩИЙ такой день недели относительно текущей даты сервера. Если пишет "в прошлый...", выбирай ближайший ПРОШЛЫЙ такой день недели.
 2. Все даты и месяцы ("август", "сентябрь") ВСЕГДА рассчитываются для ТЕКУЩЕГО ГОДА из серверной даты ({current_datetime}), т.е. 2026 год (НЕ 2025 и НЕ 2027)!
 3. Если пользователь добавляет встречу/задачу с конкретной датой и временем (например: "В понедельник парикмахерская в 10:00"), установи `is_task_add`: true, `task_text`: "Парикмахерская в 10:00", `task_date`: дата события, а также `event_start`: дата и время начала ("YYYY-MM-DDTHH:MM:SS"), `title`: "Парикмахерская".
 4. Правила расчета точного времени `trigger_at` для каждого напоминания из списка `reminders`:
@@ -97,7 +98,7 @@ SYSTEM_PROMPT = """Ты — интеллектуальный ассистент 
    - Установи `is_task_add`: true.
    - Заполни массив `tasks`, где КАЖДОЕ отдельное дело передавай отдельным объектом `{{"task_text": "...", "task_date": "YYYY-MM-DD"}}`.
    - Очищай текст каждой задачи от дефисов, номеров и от инструкций по напоминаниям в скобках. Если в скобках к конкретной задаче просят напомнить ("(напомни через 10 и 5 минут)"), добавь соответствующие элементы в массив `reminders`, а само наименование задачи оставь чистым ("Разобраться в кладовке").
-6. Если пользователь запрашивает просмотр расписания/планов ("какие планы на завтра", "что у меня 3 сентября", "покажи расписание на неделю"):
+6. Если пользователь запрашивает просмотр расписания/планов ("какие планы на завтра", "что на вчера", "что у меня 3 сентября", "покажи расписание на неделю"):
    - Установи `is_schedule_query`: true.
    - Заполни `query_date` (дата, на которую запрашиваются планы). Если запрашивается диапазон, укажи `query_end_date`.
 7. Квалификация заметок против задач:
@@ -156,9 +157,11 @@ class LLMService:
         lower_text = user_text.lower()
         months_keywords = ["январ", "феврал", "март", "апрел", "мая", "май", "июн", "июл", "август", "сентябр", "октябр", "ноябр", "декабр"]
         has_explicit_month = any(m in lower_text for m in months_keywords)
+        past_keywords = ["вчера", "позавчера", "прошл", "было", "были", "на днях", "ранее", "назад"]
+        has_past_keyword = any(kw in lower_text for kw in past_keywords)
         today_date = now.date()
 
-        if not has_explicit_month:
+        if not has_explicit_month and not has_past_keyword:
             def adjust_date(d: Optional[date]) -> Optional[date]:
                 if d and d < today_date and d.year == today_date.year and d.month == today_date.month:
                     year = d.year + (1 if d.month == 12 else 0)
@@ -169,18 +172,26 @@ class LLMService:
                         return d
                 return d
 
-            if action.query_date and not action.query_end_date:
-                action.query_date = adjust_date(action.query_date)
-
             if action.task_date:
                 action.task_date = adjust_date(action.task_date)
 
         # Fallback for schedule queries if LLM didn't set is_schedule_query or query_date
-        schedule_keywords = ["планы", "расписание", "че на сегодня", "чё на сегодня", "что на сегодня", "что сегодня", "че сегодня", "чё сегодня", "дела на сегодня", "задачи на сегодня"]
-        if any(kw in lower_text for kw in schedule_keywords):
+        has_schedule_word = any(w in lower_text for w in ["планы", "расписание", "дела", "задачи", "что на", "че на", "чё на", "что за", "че за", "чё за"])
+        has_date_word = any(d in lower_text for d in ["сегодня", "вчера", "позавчера", "завтра", "послезавтра"])
+
+        if has_schedule_word and has_date_word:
             action.is_schedule_query = True
             if not action.query_date:
-                action.query_date = today_date
+                if "позавчера" in lower_text:
+                    action.query_date = today_date - timedelta(days=2)
+                elif "вчера" in lower_text:
+                    action.query_date = today_date - timedelta(days=1)
+                elif "послезавтра" in lower_text:
+                    action.query_date = today_date + timedelta(days=2)
+                elif "завтра" in lower_text:
+                    action.query_date = today_date + timedelta(days=1)
+                else:
+                    action.query_date = today_date
 
         if action.is_schedule_query and not action.query_date:
             action.query_date = today_date
