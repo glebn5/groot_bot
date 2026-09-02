@@ -158,6 +158,40 @@ class RecurringService:
             logger.error(f"Error getting all active recurring tasks: {e}", exc_info=True)
             return []
 
+    async def update_task_title(self, task_id: int, user_id: int, new_title: str) -> bool:
+        """
+        Updates the title of a recurring task.
+        """
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "UPDATE recurring_tasks SET title = ? WHERE id = ? AND user_id = ?",
+                    (new_title.strip(), task_id, user_id)
+                )
+                conn.commit()
+                return cursor.rowcount > 0
+        except Exception as e:
+            logger.error(f"Error updating title for recurring task #{task_id}: {e}", exc_info=True)
+            return False
+
+    async def update_task_time(self, task_id: int, user_id: int, new_time: str) -> bool:
+        """
+        Updates target_time of a recurring task.
+        """
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "UPDATE recurring_tasks SET target_time = ? WHERE id = ? AND user_id = ?",
+                    (new_time.strip(), task_id, user_id)
+                )
+                conn.commit()
+                return cursor.rowcount > 0
+        except Exception as e:
+            logger.error(f"Error updating time for recurring task #{task_id}: {e}", exc_info=True)
+            return False
+
     async def update_last_triggered(self, task_id: int) -> bool:
         """
         Updates last_triggered_at timestamp for task_id.
