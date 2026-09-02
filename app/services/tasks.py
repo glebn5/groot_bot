@@ -79,7 +79,7 @@ class TasksService:
                 conn.row_factory = sqlite3.Row
                 cursor = conn.cursor()
                 cursor.execute(
-                    "SELECT id, task_text, target_date, is_completed, created_at FROM user_tasks WHERE user_id = ? AND target_date >= ? AND target_date <= ? ORDER BY target_date ASC, id ASC",
+                    "SELECT id, task_text, target_date, is_completed, created_at FROM user_tasks WHERE user_id = ? AND target_date >= ? AND target_date <= ? ORDER BY target_date ASC, is_completed ASC, id ASC",
                     (user_id, start_str, end_str)
                 )
                 rows = cursor.fetchall()
@@ -343,7 +343,7 @@ class TasksService:
 
                 for w in clean_words:
                     cursor.execute(
-                        "SELECT id, task_text, target_date, is_completed, created_at FROM user_tasks WHERE user_id = ? AND lower(task_text) LIKE ? ORDER BY target_date ASC, id ASC",
+                        "SELECT id, task_text, target_date, is_completed, created_at FROM user_tasks WHERE user_id = ? AND lower(task_text) LIKE ? ORDER BY target_date ASC, is_completed ASC, id ASC",
                         (user_id, f"%{w}%")
                     )
                     for row in cursor.fetchall():

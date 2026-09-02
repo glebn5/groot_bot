@@ -38,6 +38,10 @@ class TaskEditForm(StatesGroup):
     waiting_for_new_text = State()
 
 
+class ReminderEditForm(StatesGroup):
+    waiting_for_new_text_or_time = State()
+
+
 class TaskMoveForm(StatesGroup):
     waiting_for_date = State()
 
@@ -167,6 +171,9 @@ async def render_schedule_view(chat_id: int, start_date: date, end_date: Optiona
         if key not in seen_untimed and key not in [str(t[2]).lower() for t in dedup_timed]:
             seen_untimed.add(key)
             dedup_untimed.append((icon, text))
+
+    # Sort untimed tasks: uncompleted (▫️) first, completed (✅) second, preserving creation order
+    dedup_untimed.sort(key=lambda x: 1 if x[0] == "✅" else 0)
 
     days_acc = ["понедельник", "вторник", "среду", "четверг", "пятницу", "субботу", "воскресенье"]
     if start_date == end_date:
@@ -1174,7 +1181,7 @@ async def process_task_edit_input(message: Message, state: FSMContext):
 
 
 @router.callback_query(F.data.startswith("edit_rem:"))
-async def process_edit_reminder(callback: CallbackQuery):
+async def process_edit_reminder(callback: CallbackQuery, state: FSMContext):
     _, job_id, date_str = callback.data.split(":")
     target_date = datetime.strptime(date_str, "%Y-%m-%d").date()
     reminders = scheduler_service.get_reminders_for_date(target_date, chat_id=callback.from_user.id)
@@ -1184,19 +1191,87 @@ async def process_edit_reminder(callback: CallbackQuery):
         await callback.answer("⚠️ Напоминание не найдено или уже удалено.", show_alert=True)
         return
 
+    await state.set_state(ReminderEditForm.waiting_for_new_text_or_time)
+    await state.update_data(job_id=job_id, target_date_str=date_str, old_message=rem['message'], old_time=rem['time'])
+    context_service.set_last_date(callback.from_user.id, target_date)
+
     copyable_msg = format_copyable_text(rem['message'])
     text = (
         f"✏️ **Редактирование напоминания:**\n\n"
         f"Текущий текст _(нажмите, чтобы скопировать)_:\n{copyable_msg}\n"
         f"Время: **{rem['time']}** (дата: {rem['date']})\n\n"
-        f"Вы можете написать прямо в чат другое время или текст, например:\n"
-        f"`перенеси {rem['message']} на 15:00` или `измени время {rem['time']} на 16:30`!"
+        f"Отправьте новый текст и/или время в чат (например: `15:00 - МВД`, `в 16:30` или новый текст).\n\n"
+        f"_(нажмите кнопку ниже или отправьте /cancel для отмены)_"
     )
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🔙 Назад к напоминаниям", callback_data=f"mng_rems:{date_str}")]
     ])
     await safe_edit_markdown(callback.message, text, reply_markup=keyboard)
     await callback.answer()
+
+
+@router.message(Command("cancel"), ReminderEditForm.waiting_for_new_text_or_time)
+@router.message(F.text.in_({"cancel", "/cancel", "отмена", "Отмена", "❌ Отмена", "🔙 Отмена"}), ReminderEditForm.waiting_for_new_text_or_time)
+async def cmd_cancel_reminder_edit(message: Message, state: FSMContext):
+    data = await state.get_data()
+    date_str = data.get("target_date_str")
+    await state.clear()
+    if date_str:
+        target_date = datetime.strptime(date_str, "%Y-%m-%d").date()
+        text, reply_markup = await render_reminder_management_view(message.from_user.id, target_date)
+        await safe_answer_markdown(message, "❌ Редактирование напоминания отменено.", reply_markup=reply_markup)
+    else:
+        await message.answer("❌ Редактирование напоминания отменено.")
+
+
+@router.message(ReminderEditForm.waiting_for_new_text_or_time)
+async def process_reminder_edit_input(message: Message, state: FSMContext):
+    data = await state.get_data()
+    job_id = data.get("job_id")
+    date_str = data.get("target_date_str")
+    old_message = data.get("old_message", "")
+    old_time = data.get("old_time", "")
+    user_input = message.text.strip() if message.text else ""
+
+    if user_input.lower() in ["/cancel", "cancel", "отмена", "❌ отмена", "🔙 отмена"]:
+        await cmd_cancel_reminder_edit(message, state)
+        return
+
+    if not job_id or not user_input:
+        await message.answer("⚠️ Пожалуйста, введите новый текст или время (или /cancel).")
+        return
+
+    target_date = datetime.strptime(date_str, "%Y-%m-%d").date() if date_str else get_today()
+    tz = get_tz()
+
+    time_match = re.search(r'\b([0-1]?\d|2[0-3])\s*[\:\.\-]\s*([0-5]\d)\b', user_input)
+    if time_match:
+        h = int(time_match.group(1))
+        m = int(time_match.group(2))
+        new_time_str = f"{h:02d}:{m:02d}"
+        clean_text = re.sub(r'\b([0-1]?\d|2[0-3])\s*[\:\.\-]\s*([0-5]\d)\b', '', user_input).strip(" -—:•")
+        new_msg = clean_text if clean_text else old_message
+    else:
+        try:
+            h, m = map(int, old_time.split(":"))
+        except Exception:
+            h, m = 12, 0
+        new_time_str = old_time
+        new_msg = user_input
+
+    new_trigger_dt = datetime.combine(target_date, datetime.min.time().replace(hour=h, minute=m), tzinfo=tz)
+
+    updated = scheduler_service.update_reminder(job_id, new_trigger_at=new_trigger_dt, new_message=new_msg)
+    await state.clear()
+
+    text, reply_markup = await render_reminder_management_view(message.from_user.id, target_date)
+
+    if updated:
+        date_fmt = target_date.strftime("%d.%m.%Y")
+        confirm_msg = f"✅ Напоминание обновлено: **{date_fmt} в {new_time_str} — {new_msg}** 🌴\n\n" + text
+        await safe_answer_markdown(message, confirm_msg, reply_markup=reply_markup)
+    else:
+        await message.answer("⚠️ Не удалось обновить напоминание. Возможно, оно было удалено.", reply_markup=reply_markup)
 
 
 @router.callback_query(F.data.startswith("del_rem:"))
