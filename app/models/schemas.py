@@ -1,6 +1,6 @@
 from datetime import date, datetime
-from typing import List, Optional
-from pydantic import BaseModel, Field
+from typing import Any, List, Optional
+from pydantic import BaseModel, Field, model_validator
 
 
 class ReminderItem(BaseModel):
@@ -23,7 +23,7 @@ class TaskItem(BaseModel):
 
 
 class ParsedAction(BaseModel):
-    is_actionable: bool = Field(..., description="Whether user request contains tasks, calendar events, or reminders")
+    is_actionable: bool = Field(default=False, description="Whether user request contains tasks, calendar events, or reminders")
     is_schedule_query: bool = Field(default=False, description="Whether user is asking to view plans/schedule/reminders for a specific date or date range")
     is_search_query: bool = Field(default=False, description="Whether user is searching when/where a specific event or task takes place (e.g. 'когда парикмахерская', 'когда врач')")
     search_query: Optional[str] = Field(None, description="Keyword/phrase to search for across tasks, reminders, and calendar (e.g. 'парикмахерская')")
@@ -56,10 +56,22 @@ class ParsedAction(BaseModel):
     repeat_interval: Optional[int] = Field(None, description="Interval in days for interval_days recurrence (e.g. 4 for every 4 days)")
     repeat_time: Optional[str] = Field(None, description="Target time of day in HH:MM format (e.g. '18:00')")
     is_recurring_query: bool = Field(default=False, description="Whether user is asking to view habits or recurring tasks")
-    title: str = Field(..., description="Short title summary of the action/user request")
+    title: Optional[str] = Field(default="", description="Short title summary of the action/user request")
     description: Optional[str] = Field(None, description="Detailed description or context if available")
     event_start: Optional[datetime] = Field(None, description="Start date and time for Google Calendar event")
     event_end: Optional[datetime] = Field(None, description="End date and time for Google Calendar event")
     reminders: List[ReminderItem] = Field(default_factory=list, description="List of scheduled chat reminders")
     obsidian_entry: Optional[ObsidianEntry] = Field(None, description="Obsidian daily note task entry if applicable")
-    confirmation_text: str = Field(..., description="Friendly user message confirming created events/tasks/reminders")
+    confirmation_text: Optional[str] = Field(default="🌴 Готово!", description="Friendly user message confirming created events/tasks/reminders")
+
+    @model_validator(mode="before")
+    @classmethod
+    def preprocess_null_fields(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            if data.get("title") is None:
+                data["title"] = ""
+            if data.get("is_actionable") is None:
+                data["is_actionable"] = False
+            if data.get("confirmation_text") is None:
+                data["confirmation_text"] = "🌴 Готово!"
+        return data

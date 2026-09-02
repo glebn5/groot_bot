@@ -175,6 +175,16 @@ class LLMService:
             if action.task_date:
                 action.task_date = adjust_date(action.task_date)
 
+        # Fallback for schedule queries if LLM didn't set is_schedule_query or query_date
+        schedule_keywords = ["планы", "расписание", "че на сегодня", "чё на сегодня", "что на сегодня", "что сегодня", "че сегодня", "чё сегодня", "дела на сегодня", "задачи на сегодня"]
+        if any(kw in lower_text for kw in schedule_keywords):
+            action.is_schedule_query = True
+            if not action.query_date:
+                action.query_date = today_date
+
+        if action.is_schedule_query and not action.query_date:
+            action.query_date = today_date
+
         # Fallback for search queries if LLM didn't set is_search_query
         if not action.is_search_query:
             clean_q = lower_text.strip()
@@ -404,6 +414,7 @@ class LLMService:
             "is_schedule_query": False,
             "is_note_save": False,
             "is_task_add": False,
+            "title": "Инструкция по настройке",
             "confirmation_text": "🌴 Я получил фото! Чтобы я мог автоматически считывать с него текст (талоны к врачу, чеки, справки), укажите бесплатный **Gemini API Key** через команду `/settings`. Либо отправьте фото вместе с текстом-описанием!"
         }
         return json.dumps(fallback_json, ensure_ascii=False)
@@ -436,15 +447,21 @@ class LLMService:
 
     def _clean_and_parse_json(self, raw_str: str) -> ParsedAction:
         cleaned = raw_str.strip()
-        if cleaned.startswith("```json"):
-            cleaned = cleaned[7:]
-        if cleaned.startswith("```"):
-            cleaned = cleaned[3:]
-        if cleaned.endswith("```"):
-            cleaned = cleaned[:-3]
-        cleaned = cleaned.strip()
+        if "```" in cleaned:
+            match = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", cleaned, re.IGNORECASE)
+            if match:
+                cleaned = match.group(1).strip()
 
-        data_dict = json.loads(cleaned)
+        json_match = re.search(r"\{[\s\S]*\}", cleaned)
+        if json_match:
+            cleaned = json_match.group(0).strip()
+
+        try:
+            data_dict = json.loads(cleaned)
+        except Exception as parse_err:
+            logger.error(f"Failed to parse LLM raw response as JSON. Raw string: {raw_str}. Error: {parse_err}")
+            raise ValueError(f"Ошибка формата JSON от нейросети: {parse_err}") from parse_err
+
         return ParsedAction.model_validate(data_dict)
 
 

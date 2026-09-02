@@ -643,7 +643,7 @@ async def execute_action_pipeline(bot: Bot, chat_id: int, action: ParsedAction, 
                 logger.error(f"Scheduling reminder failed: {e}")
                 status_notes.append(f"⚠️ Ошибка планирования напоминания: {e}")
 
-    response_text = action.confirmation_text
+    response_text = action.confirmation_text or "🌴 Готово!"
     if status_notes:
         response_text += "\n\n" + "\n".join(status_notes)
 
