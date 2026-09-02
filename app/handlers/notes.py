@@ -236,6 +236,14 @@ async def process_save_note_content(message: Message, state: FSMContext):
     await safe_send_markdown(message, text, reply_markup=reply_markup)
 
 
+def format_copyable_text(text: str) -> str:
+    clean = str(text or "").strip()
+    if "\n" in clean or "`" in clean:
+        clean_escaped = clean.replace("```", "` ` `")
+        return f"```\n{clean_escaped}\n```"
+    return f"`{clean}`"
+
+
 @router.callback_query(F.data.startswith("edit_n_prompt:"))
 async def process_edit_note_prompt(callback: CallbackQuery, state: FSMContext):
     parts = callback.data.split(":")
@@ -251,9 +259,10 @@ async def process_edit_note_prompt(callback: CallbackQuery, state: FSMContext):
     await state.set_state(NoteEditForm.waiting_for_new_text)
     await state.update_data(note_id=note_id, page=page, idx=idx)
 
+    copyable_content = format_copyable_text(note['content'])
     text = (
         f"✏️ **Редактирование заметки #{idx}:**\n\n"
-        f"Текущий текст:\n_«{note['content']}»_\n\n"
+        f"Текущий текст _(нажмите, чтобы скопировать)_:\n{copyable_content}\n\n"
         f"Отправьте новый текст заметки одним сообщением.\n\n"
         f"_(нажмите кнопку ниже или отправьте /cancel для отмены)_"
     )

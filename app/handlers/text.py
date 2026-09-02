@@ -1083,6 +1083,14 @@ async def process_task_time_input(message: Message, state: FSMContext):
     )
 
 
+def format_copyable_text(text: str) -> str:
+    clean = str(text or "").strip()
+    if "\n" in clean or "`" in clean:
+        clean_escaped = clean.replace("```", "` ` `")
+        return f"```\n{clean_escaped}\n```"
+    return f"`{clean}`"
+
+
 @router.callback_query(F.data.startswith("edit_t:"))
 async def process_edit_task_callback(callback: CallbackQuery, state: FSMContext):
     parts = callback.data.split(":")
@@ -1099,9 +1107,10 @@ async def process_edit_task_callback(callback: CallbackQuery, state: FSMContext)
     await state.set_state(TaskEditForm.waiting_for_new_text)
     await state.update_data(task_id=task_id, target_date_str=date_str, page=page, idx=idx)
 
+    copyable_text = format_copyable_text(task['task_text'])
     text = (
         f"✏️ **Редактирование задачи #{idx}:**\n\n"
-        f"Текущий текст: **\"{task['task_text']}\"**\n\n"
+        f"Текущий текст _(нажмите, чтобы скопировать)_:\n{copyable_text}\n\n"
         f"Отправьте новый текст для этой задачи сообщением в чат:\n\n"
         f"_(нажмите кнопку ниже или отправьте /cancel для отмены)_"
     )
@@ -1175,9 +1184,11 @@ async def process_edit_reminder(callback: CallbackQuery):
         await callback.answer("⚠️ Напоминание не найдено или уже удалено.", show_alert=True)
         return
 
+    copyable_msg = format_copyable_text(rem['message'])
     text = (
         f"✏️ **Редактирование напоминания:**\n\n"
-        f"Текущее: ⏰ **{rem['time']} — {rem['message']}** (дата: {rem['date']})\n\n"
+        f"Текущий текст _(нажмите, чтобы скопировать)_:\n{copyable_msg}\n"
+        f"Время: **{rem['time']}** (дата: {rem['date']})\n\n"
         f"Вы можете написать прямо в чат другое время или текст, например:\n"
         f"`перенеси {rem['message']} на 15:00` или `измени время {rem['time']} на 16:30`!"
     )
