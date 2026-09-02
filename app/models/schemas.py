@@ -74,4 +74,30 @@ class ParsedAction(BaseModel):
                 data["is_actionable"] = False
             if data.get("confirmation_text") is None:
                 data["confirmation_text"] = "🌴 Готово!"
+
+            # Handle null or non-list values for list fields
+            if data.get("repeat_days") is None:
+                data["repeat_days"] = []
+            elif isinstance(data.get("repeat_days"), str):
+                data["repeat_days"] = [d.strip() for d in data["repeat_days"].split(",") if d.strip()]
+            elif isinstance(data.get("repeat_days"), list):
+                data["repeat_days"] = [str(d).strip() for d in data["repeat_days"] if d is not None]
+
+            if data.get("tasks") is None:
+                data["tasks"] = []
+            if data.get("reminders") is None:
+                data["reminders"] = []
+
+            # Ensure all string fields are actual strings if LLM returns int/float/etc.
+            string_fields = [
+                "title", "confirmation_text", "note_content", "task_text",
+                "search_query", "move_task_query", "delete_task_query",
+                "goal_text", "target_month", "recurring_title", "repeat_type",
+                "repeat_time", "description", "move_to_time"
+            ]
+            for field in string_fields:
+                val = data.get(field)
+                if val is not None and not isinstance(val, str):
+                    data[field] = str(val)
+
         return data
