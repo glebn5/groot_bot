@@ -28,10 +28,12 @@ class NoteEditForm(StatesGroup):
 
 def format_copyable_text(text: str) -> str:
     clean = str(text or "").strip()
-    if "\n" in clean or "`" in clean:
-        clean_escaped = clean.replace("```", "` ` `")
+    if not clean:
+        return "` ` "
+    clean_escaped = clean.replace("```", "` ` `")
+    if "\n" in clean_escaped:
         return f"```\n{clean_escaped}\n```"
-    return f"`{clean}`"
+    return f"`{clean_escaped}`"
 
 
 async def safe_send_markdown(message: Message, text: str, reply_markup=None):
@@ -185,9 +187,10 @@ async def render_note_detail_view(user_id: int, note_id: int, folder_id: int = 0
         if f_info:
             folder_name = f_info["name"]
 
+    copyable_content = format_copyable_text(note['content'])
     text = (
         f"📌 **Управление заметкой #{idx}:**\n\n"
-        f"📝 **{note['content']}**\n\n"
+        f"{copyable_content}\n\n"
         f"📁 Раздел: **{folder_name}**\n"
         f"⏱ Создано: _{note['created_at']}_"
     )
