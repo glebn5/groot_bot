@@ -163,6 +163,7 @@ class SchedulerService:
     def get_reminders_for_date_range(self, start_date, end_date, chat_id=None) -> list:
         """
         Returns list of active reminders between start_date and end_date in the configured timezone.
+        Filters out system jobs (like periodic summary or recurring task triggers).
         """
         results = []
         if not self.scheduler:
@@ -170,6 +171,10 @@ class SchedulerService:
         tz = get_tz()
         try:
             for job in self.scheduler.get_jobs():
+                # Only include single-shot user reminders
+                if job.func != send_reminder_notification and getattr(job.func, '__name__', '') != 'send_reminder_notification':
+                    continue
+
                 if job.next_run_time:
                     run_dt = job.next_run_time.astimezone(tz)
                     if start_date <= run_dt.date() <= end_date:
@@ -244,6 +249,9 @@ class SchedulerService:
 
         try:
             for job in self.scheduler.get_jobs():
+                if job.func != send_reminder_notification and getattr(job.func, '__name__', '') != 'send_reminder_notification':
+                    continue
+
                 if job.next_run_time:
                     msg = (job.args[1] if len(job.args) > 1 else "").lower()
                     if any(w in msg for w in words):
@@ -255,7 +263,7 @@ class SchedulerService:
                                 "time": run_dt.strftime("%H:%M"),
                                 "message": job.args[1] if len(job.args) > 1 else "Напоминание"
                             }
-            return res_list
+            return list(results.values())
         except Exception as e:
             logger.error(f"Error searching reminders for query '{query}': {e}")
             return []
