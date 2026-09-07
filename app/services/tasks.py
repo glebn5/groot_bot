@@ -355,5 +355,38 @@ class TasksService:
             logger.error(f"Error searching tasks matching '{query}': {e}", exc_info=True)
             return []
 
+    async def rollover_uncompleted_tasks(self, user_id: Optional[int] = None, current_date: Optional[date] = None) -> int:
+        """
+        Moves uncompleted tasks (is_completed = 0) whose target_date < current_date to current_date.
+        If user_id is None, rolls over tasks for all users.
+        Returns number of tasks rolled over.
+        """
+        if not current_date:
+            current_date = get_today()
+
+        today_str = current_date.strftime("%Y-%m-%d")
+
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                if user_id:
+                    cursor.execute(
+                        "UPDATE user_tasks SET target_date = ? WHERE user_id = ? AND target_date < ? AND is_completed = 0",
+                        (today_str, user_id, today_str)
+                    )
+                else:
+                    cursor.execute(
+                        "UPDATE user_tasks SET target_date = ? WHERE target_date < ? AND is_completed = 0",
+                        (today_str, today_str)
+                    )
+                conn.commit()
+                count = cursor.rowcount
+                if count > 0:
+                    logger.info(f"Rolled over {count} uncompleted tasks to {today_str} (user_id={user_id})")
+                return count
+        except Exception as e:
+            logger.error(f"Error rolling over uncompleted tasks: {e}", exc_info=True)
+            return 0
+
 
 tasks_service = TasksService()

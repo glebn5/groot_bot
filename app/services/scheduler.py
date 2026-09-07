@@ -124,6 +124,15 @@ class SchedulerService:
             )
             logger.info("Monthly goals reminder check scheduled.")
 
+            # Setup midnight check for auto-rollover of uncompleted tasks
+            self.scheduler.add_job(
+                auto_rollover_uncompleted_tasks_job,
+                trigger=CronTrigger(hour=0, minute=0, timezone=get_tz()),
+                id="auto_rollover_tasks_check",
+                replace_existing=True
+            )
+            logger.info("Midnight auto-rollover task check scheduled.")
+
     def stop(self):
         if self.scheduler.running:
             self.scheduler.shutdown()
@@ -515,6 +524,16 @@ async def send_recurring_task_notification(user_id: int, task_id: int, title: st
         logger.error(f"Error sending recurring task notification for task #{task_id}: {e}", exc_info=True)
     finally:
         await bot.session.close()
+
+
+async def auto_rollover_uncompleted_tasks_job():
+    """
+    Cron job function executed at midnight to automatically roll over uncompleted tasks to today if setting is enabled.
+    """
+    if getattr(settings, "AUTO_ROLLOVER_UNCOMPLETED_TASKS", False):
+        from app.services.tasks import tasks_service
+        count = await tasks_service.rollover_uncompleted_tasks()
+        logger.info(f"Midnight auto-rollover job executed. Rolled over {count} uncompleted tasks.")
 
 
 scheduler_service = SchedulerService()

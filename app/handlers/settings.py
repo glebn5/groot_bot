@@ -188,15 +188,20 @@ def render_settings_snooze():
 
     night_status = "🟢 24/7 (Разрешены)" if allow_night else f"🔴 Часы тишины ({quiet_start}–{quiet_end})"
 
+    auto_rollover = getattr(settings, "AUTO_ROLLOVER_UNCOMPLETED_TASKS", False)
+    rollover_status = "🟢 Включен (на завтра)" if auto_rollover else "🔴 Отключен"
+
     text = (
         "⏱ **Настройки напоминаний и таймеров**\n\n"
-        "Управление временем откладывания, сводками, целями и ночным режимом:\n\n"
+        "Управление временем откладывания, авто-переносом, сводками, целями и ночным режимом:\n\n"
+        f"• **Авто-перенос задач:** `{rollover_status}`\n"
         f"• **Базовое откладывание:** `{st['snooze_min']} мин`\n"
         f"• **Авто-напоминание планов на день:** `{sched_status}`\n"
         f"• **Ночные уведомления:** `{night_status}`\n"
         "• **Напоминания для задач без времени:** `08:00, 12:00, 15:00, 19:00`"
     )
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=f"🔄 Авто-перенос невыполненных ({'Вкл' if auto_rollover else 'Выкл'})", callback_data="toggle_auto_rollover")],
         [InlineKeyboardButton(text="🎯 Цели на месяц", callback_data="settings_cat:goals")],
         [InlineKeyboardButton(text=f"🌙 Ночной режим ({'24/7' if allow_night else f'Не беспокоить {quiet_start}-{quiet_end}'})", callback_data="settings_cat:quiet_hours")],
         [InlineKeyboardButton(text=f"⏱ Время откладывания ({st['snooze_min']} мин)", callback_data="set_key:DEFAULT_SNOOZE_MINUTES:snooze")],
@@ -723,5 +728,23 @@ async def process_new_setting_value(message: Message, state: FSMContext):
     else:
         text, keyboard = render_settings_main()
 
-    success_msg = f"✅ Переменная **`{key_name}`** успешно обновлена (`{new_value}`)!\n\n" + text
-    await message.answer(success_msg, reply_markup=keyboard, parse_mode="Markdown")
+    await safe_send_markdown(message, f"✅ **Настройка `{key_name}` обновлена!**", reply_markup=None)
+    await safe_send_markdown(message, text, reply_markup=keyboard)
+
+
+@router.callback_query(F.data == "toggle_auto_rollover")
+async def process_toggle_auto_rollover(callback: CallbackQuery):
+    curr = getattr(settings, "AUTO_ROLLOVER_UNCOMPLETED_TASKS", False)
+    new_val = not curr
+    settings.AUTO_ROLLOVER_UNCOMPLETED_TASKS = new_val
+    update_env_file("AUTO_ROLLOVER_UNCOMPLETED_TASKS", "true" if new_val else "false")
+
+    if new_val:
+        from app.services.tasks import tasks_service
+        count = await tasks_service.rollover_uncompleted_tasks(user_id=callback.from_user.id)
+        await callback.answer(f"🔄 Авто-перенос задач ВКЛЮЧЕН! ({count} задач перенесено)", show_alert=True)
+    else:
+        await callback.answer("❌ Авто-перенос невыполненных задач ОТКЛЮЧЕН!", show_alert=True)
+
+    text, reply_markup = render_settings_snooze()
+    await safe_edit_markdown(callback.message, text, reply_markup=reply_markup)

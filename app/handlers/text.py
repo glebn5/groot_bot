@@ -100,6 +100,10 @@ async def render_schedule_view(chat_id: int, start_date: date, end_date: Optiona
 
     context_service.set_last_date(chat_id, start_date)
 
+    if getattr(settings, "AUTO_ROLLOVER_UNCOMPLETED_TASKS", False):
+        if start_date <= get_today() <= end_date:
+            await tasks_service.rollover_uncompleted_tasks(user_id=chat_id)
+
     timed_items = []    # list of tuples: (time_str, icon, formatted_text)
     untimed_items = []  # list of tuples: (icon, formatted_text)
 

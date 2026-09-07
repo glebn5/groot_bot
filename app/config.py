@@ -27,6 +27,7 @@ class Settings(BaseSettings):
     ALLOW_NIGHT_NOTIFICATIONS: bool = False
     QUIET_HOURS_START: str = "23:00"
     QUIET_HOURS_END: str = "08:00"
+    AUTO_ROLLOVER_UNCOMPLETED_TASKS: bool = False
 
     model_config = SettingsConfigDict(
         env_file=".env",
