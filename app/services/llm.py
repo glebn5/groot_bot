@@ -97,7 +97,7 @@ SYSTEM_PROMPT = """Ты — интеллектуальный ассистент 
    - Если пользователь в одном сообщении перебирает НЕСКОЛЬКО дел/задач (списком через переносы строк, пункты 1, 2, 3 или '- ', либо в тексте типа "так, сегодня по задачам: сделать принт..., заказать штаны..."), КАТЕГОРИЧЕСКИ НЕ объединяй их в одну длинную задачу!
    - Установи `is_task_add`: true.
    - Заполни массив `tasks`, где КАЖДОЕ отдельное дело передавай отдельным объектом `{{"task_text": "...", "task_date": "YYYY-MM-DD"}}`.
-   - Очищай текст каждой задачи от дефисов, номеров и от инструкций по напоминаниям в скобках. Если в скобках к конкретной задаче просят напомнить ("(напомни через 10 и 5 минут)"), добавь соответствующие элементы в массив `reminders`, а само наименование задачи оставь чистым ("Разобраться в кладовке").
+   - Очищай текст каждой задачи от дефисов, номеров, префиксов даты/времени ("Завтра в 16:00 Нотариус" -> task_text: "Нотариус") и от инструкций по напоминаниям. Отдельные строки и фразы с инструкциями напоминания ("Напомни за 3 часа...", "напомни через...") КАТЕГОРИЧЕСКИ НЕЛЬЗЯ сохранять как задачи! Заполняй ими ТОЛЬКО массив reminders, а массив tasks оставляй чистым от этих инструкций.
 6. Если пользователь запрашивает просмотр расписания/планов ("какие планы на завтра", "что на вчера", "что у меня 3 сентября", "покажи расписание на неделю"):
    - Установи `is_schedule_query`: true.
    - Заполни `query_date` (дата, на которую запрашиваются планы). Если запрашивается диапазон, укажи `query_end_date`.
@@ -257,20 +257,49 @@ class LLMService:
             if clean_q:
                 action.move_task_query = clean_q
 
+        # --- HELPER FUNCTIONS FOR CLEANING AND REMINDER DETECTION ---
+        def _is_reminder_instruction(line_str: str) -> bool:
+            clean_l = line_str.strip().lower()
+            if re.search(r'^\s*(напомни|напоминание|напомнить|уведоми|напоминай)\b', clean_l):
+                return True
+            if re.search(r'^\s*за\s+(\d+|пол|полу|час|два|три|четыре)\s*(часа|часов|час|мин|минут|полчаса|пол часа)', clean_l):
+                return True
+            if re.search(r'^\s*через\s+(\d+|пол|полу|час|два|три|четыре)\s*(часа|часов|час|мин|минут|полчаса|пол часа)', clean_l):
+                return True
+            return False
+
+        def _clean_task_text_str(text_str: str) -> str:
+            s = text_str.strip()
+            s = re.sub(r"^[\-\*\•\d\.\)]+\s*", "", s).strip()
+            s = re.sub(r"^(завтра|сегодня|послезавтра|вчера)\s+", "", s, flags=re.IGNORECASE).strip()
+            s = re.sub(r"^(в\s+)?\b([0-1]?\d|2[0-3])\b[\:\.\-][0-5]\d\s*[\—\-\•]?\s*", "", s, flags=re.IGNORECASE).strip()
+            s = re.sub(r"^(завтра|сегодня|послезавтра|вчера)\s+", "", s, flags=re.IGNORECASE).strip()
+            s = re.sub(r"\((напомни|напоминание|напомнить)[^\)]*\)", "", s, flags=re.IGNORECASE).strip()
+            if s:
+                s = s[0].upper() + s[1:]
+                return s
+            return text_str.strip()
+
         # --- MULTI-TASK SPLITTING AND CLEANING LOGIC ---
         if action.tasks:
             cleaned_tasks = []
             for t in action.tasks:
                 if t.task_text and t.task_text.strip():
-                    text = re.sub(r"^[\-\*\•\d\.\)]+\s*", "", t.task_text.strip()).strip()
-                    text = re.sub(r"\((напомни|напоминание|напомнить)[^\)]*\)", "", text, flags=re.IGNORECASE).strip()
-                    if text:
-                        text = text[0].upper() + text[1:]
+                    if _is_reminder_instruction(t.task_text):
+                        continue
+                    text = _clean_task_text_str(t.task_text)
+                    if text and not _is_reminder_instruction(text):
                         t_date = t.task_date or action.task_date or today_date
                         cleaned_tasks.append(TaskItem(task_text=text, task_date=t_date))
+            action.tasks = cleaned_tasks
             if cleaned_tasks:
-                action.tasks = cleaned_tasks
                 action.is_task_add = True
+
+        if action.task_text:
+            if _is_reminder_instruction(action.task_text):
+                action.task_text = None
+            else:
+                action.task_text = _clean_task_text_str(action.task_text)
 
         if not action.is_note_save and not action.is_schedule_query and not action.is_search_query:
             lines = [l.strip() for l in user_text.splitlines() if l.strip()]
@@ -291,54 +320,57 @@ class LLMService:
                     if re.search(hp, line, re.IGNORECASE):
                         is_header = True
                         break
-                if is_header:
+                if is_header or _is_reminder_instruction(line):
                     continue
 
-                clean = re.sub(r"^[\-\*\•\d\.\)]+\s*", "", line).strip()
-                clean = re.sub(r"\((напомни|напоминание|напомнить)[^\)]*\)", "", clean, flags=re.IGNORECASE).strip()
-
-                if clean:
-                    clean = clean[0].upper() + clean[1:]
+                clean = _clean_task_text_str(line)
+                if clean and not _is_reminder_instruction(clean):
                     extracted_task_lines.append(clean)
 
-            if len(extracted_task_lines) > 1:
+            if len(extracted_task_lines) == 1:
+                t_date = action.task_date or today_date
+                clean_t = extracted_task_lines[0]
+                action.tasks = [TaskItem(task_text=clean_t, task_date=t_date)]
+                action.task_text = clean_t
+                action.is_task_add = True
+            elif len(extracted_task_lines) > 1:
                 t_date = action.task_date or today_date
                 action.tasks = [TaskItem(task_text=txt, task_date=t_date) for txt in extracted_task_lines]
-                action.is_task_add = True
                 action.task_text = None
+                action.is_task_add = True
 
-        # --- AUTO-REMINDER FOR TIMED TASKS ---
-        if (action.is_task_add or action.event_start) and not action.reminders:
-            all_texts = [user_text]
-            if action.task_text:
-                all_texts.append(action.task_text)
-            if action.tasks:
-                all_texts.extend([t.task_text for t in action.tasks if t.task_text])
+        # --- AUTO-REMINDER FOR TIMED TASKS (including exact event time) ---
+        time_m = re.search(r'\b(?:в\s+)?([0-1]?\d|2[0-3])\s*[\:\.\-]\s*([0-5]\d)\b', user_text, re.IGNORECASE)
+        if (action.is_task_add or action.event_start) and time_m:
+            h = int(time_m.group(1))
+            m = int(time_m.group(2))
+            t_date = action.task_date or today_date
+            event_dt = datetime.combine(t_date, datetime.min.time().replace(hour=h, minute=m), tzinfo=tz)
 
-            for txt in all_texts:
-                time_m = re.search(r'\b(?:в\s+)?([0-1]?\d|2[0-3])\s*[\:\s]\s*([0-5]\d)\b', txt, re.IGNORECASE)
-                if time_m:
-                    h = int(time_m.group(1))
-                    m = int(time_m.group(2))
-                    t_date = action.task_date or today_date
-                    trigger_dt = datetime.combine(t_date, datetime.min.time().replace(hour=h, minute=m), tzinfo=tz)
+            if t_date == today_date and event_dt <= now and h < 12:
+                has_am = any(kw in lower_text for kw in ["утра", "утром", "am", "ам"])
+                if not has_am:
+                    event_dt += timedelta(hours=12)
 
-                    if t_date == today_date and trigger_dt <= now and h < 12:
-                        has_am = any(kw in lower_text for kw in ["утра", "утром", "am", "ам"])
-                        if not has_am:
-                            trigger_dt += timedelta(hours=12)
+            if event_dt > now:
+                has_exact = any(r.trigger_at and ensure_aware(r.trigger_at) == event_dt for r in action.reminders)
+                if not has_exact:
+                    clean_msg = action.task_text or (action.tasks[0].task_text if action.tasks else None)
+                    if clean_msg:
+                        clean_msg = _clean_task_text_str(clean_msg)
+                    else:
+                        clean_msg = action.title or "Запланированная задача"
 
-                    if trigger_dt > now:
-                        clean_msg = re.sub(r'^\s*в\s+\d{1,2}[\:\s]\d{2}\s*', '', txt, flags=re.IGNORECASE).strip()
-                        clean_msg = re.sub(r'^\s*\d{1,2}[\:\s]\d{2}\s*[\—\-\•]?\s*', '', clean_msg).strip()
-                        if clean_msg:
-                            clean_msg = clean_msg[0].upper() + clean_msg[1:]
-                        else:
-                            clean_msg = action.title or "Запланированная задача"
+                    action.reminders.append(ReminderItem(trigger_at=event_dt, message=clean_msg))
+                    logger.info(f"Added exact event time reminder at {event_dt} for timed task: '{clean_msg}'")
 
-                        action.reminders.append(ReminderItem(trigger_at=trigger_dt, message=clean_msg))
-                        logger.info(f"Auto-created reminder at {trigger_dt} for timed task: '{clean_msg}'")
-                        break
+        if action.reminders:
+            def _get_rem_dt(rem_item):
+                dt_val = rem_item.trigger_at
+                if dt_val:
+                    return ensure_aware(dt_val)
+                return now
+            action.reminders.sort(key=_get_rem_dt)
 
         return action
 

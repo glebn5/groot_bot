@@ -660,8 +660,10 @@ async def execute_action_pipeline(bot: Bot, chat_id: int, action: ParsedAction, 
                     trigger_at=trigger_dt,
                     message=r.message
                 )
-                time_str = trigger_dt.strftime("%d.%m.%Y в %H:%M")
-                status_notes.append(f"⏰ Запланировано напоминание на {time_str}")
+                r_date_str = trigger_dt.strftime("%d.%m.%Y")
+                r_time_str = trigger_dt.strftime("%H:%M")
+                msg_label = f' "{r.message}"' if r.message else ""
+                status_notes.append(f"⏰ Запланировано напоминание{msg_label} на {r_date_str} в {r_time_str}")
             except Exception as e:
                 logger.error(f"Scheduling reminder failed: {e}")
                 status_notes.append(f"⚠️ Ошибка планирования напоминания: {e}")
