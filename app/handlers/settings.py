@@ -39,6 +39,13 @@ def normalize_time_input(val: str) -> Optional[str]:
     return None
 
 
+async def safe_send_markdown(message: Message, text: str, reply_markup=None):
+    try:
+        await message.answer(text, reply_markup=reply_markup, parse_mode="Markdown")
+    except Exception:
+        await message.answer(text, reply_markup=reply_markup)
+
+
 class SettingsForm(StatesGroup):
     waiting_for_value = State()
     waiting_for_sa_file = State()
