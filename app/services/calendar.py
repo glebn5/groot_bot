@@ -122,5 +122,93 @@ class CalendarService:
             logger.error(f"Error searching Google Calendar events for '{query}': {e}")
             return []
 
+    async def get_event_by_id(self, event_id: str) -> Optional[dict]:
+        """
+        Retrieves a single Google Calendar event by ID.
+        """
+        if not self.service:
+            return None
+        try:
+            return self.service.events().get(
+                calendarId=settings.GOOGLE_CALENDAR_ID,
+                eventId=event_id
+            ).execute()
+        except Exception as e:
+            logger.error(f"Error retrieving Google Calendar event '{event_id}': {e}")
+            return None
+
+    async def update_event(
+        self,
+        event_id: str,
+        title: Optional[str] = None,
+        start_time: Optional[datetime] = None,
+        end_time: Optional[datetime] = None,
+        description: Optional[str] = None
+    ) -> Optional[dict]:
+        """
+        Updates an existing Google Calendar event.
+        """
+        if not self.service:
+            logger.warning("Google Calendar service not initialized. Cannot update event.")
+            return None
+
+        try:
+            event = self.service.events().get(
+                calendarId=settings.GOOGLE_CALENDAR_ID,
+                eventId=event_id
+            ).execute()
+
+            if title:
+                event['summary'] = title
+            if description is not None:
+                event['description'] = description
+
+            if start_time:
+                if not end_time:
+                    end_time = start_time + timedelta(hours=1)
+                event['start'] = {
+                    'dateTime': start_time.isoformat(),
+                    'timeZone': settings.TIMEZONE,
+                }
+                event['end'] = {
+                    'dateTime': end_time.isoformat(),
+                    'timeZone': settings.TIMEZONE,
+                }
+            elif end_time:
+                event['end'] = {
+                    'dateTime': end_time.isoformat(),
+                    'timeZone': settings.TIMEZONE,
+                }
+
+            updated_event = self.service.events().update(
+                calendarId=settings.GOOGLE_CALENDAR_ID,
+                eventId=event_id,
+                body=event
+            ).execute()
+            logger.info(f"Google Calendar event {event_id} updated successfully.")
+            return updated_event
+        except Exception as e:
+            logger.error(f"Error updating Google Calendar event '{event_id}': {e}", exc_info=True)
+            raise RuntimeError(f"Failed to update Google Calendar event: {str(e)}")
+
+    async def delete_event(self, event_id: str) -> bool:
+        """
+        Deletes a Google Calendar event by ID.
+        """
+        if not self.service:
+            logger.warning("Google Calendar service not initialized. Cannot delete event.")
+            return False
+
+        try:
+            self.service.events().delete(
+                calendarId=settings.GOOGLE_CALENDAR_ID,
+                eventId=event_id
+            ).execute()
+            logger.info(f"Google Calendar event {event_id} deleted successfully.")
+            return True
+        except Exception as e:
+            logger.error(f"Error deleting Google Calendar event '{event_id}': {e}", exc_info=True)
+            return False
+
 
 calendar_service = CalendarService()

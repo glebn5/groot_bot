@@ -153,6 +153,14 @@ class SchedulerService:
             logger.warning(f"Reminder trigger time {trigger_at} is in the past. Adjusting to execute immediately.")
             trigger_at = now
 
+        import asyncio
+        try:
+            cur_loop = asyncio.get_running_loop()
+            if getattr(self.scheduler, '_eventloop', None) != cur_loop:
+                self.scheduler._eventloop = cur_loop
+        except Exception:
+            pass
+
         job = self.scheduler.add_job(
             send_reminder_notification,
             'date',
@@ -319,6 +327,14 @@ class SchedulerService:
         try:
             if self.scheduler.get_job(job_id):
                 self.scheduler.remove_job(job_id)
+
+            import asyncio
+            try:
+                cur_loop = asyncio.get_running_loop()
+                if getattr(self.scheduler, '_eventloop', None) != cur_loop:
+                    self.scheduler._eventloop = cur_loop
+            except Exception:
+                pass
 
             tz = get_tz()
             hour, minute = map(int, target_time.split(":"))

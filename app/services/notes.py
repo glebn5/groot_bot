@@ -290,5 +290,35 @@ class NotesService:
             logger.error(f"Error clearing notes for user_id={user_id}: {e}", exc_info=True)
             return False
 
+    async def search_notes(self, user_id: int, query: str) -> List[Dict[str, Any]]:
+        """
+        Searches notes matching query string for user_id.
+        """
+        stop_words = {"заметку", "заметки", "запомни", "запиши", "в", "на", "о", "про", "что"}
+        words = [w.lower().strip("?!.,—:-") for w in query.split() if len(w.strip("?!.,—:-")) >= 2 and w.lower().strip("?!.,—:-") not in stop_words]
+        if not words:
+            words = [query.lower().strip("?!.,—:-")]
+
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                conn.create_function("lower", 1, lambda s: s.lower() if isinstance(s, str) else s)
+                conn.row_factory = sqlite3.Row
+                cursor = conn.cursor()
+
+                results = {}
+                for w in words:
+                    cursor.execute(
+                        "SELECT id, content, folder_id, created_at FROM user_notes WHERE user_id = ? AND lower(content) LIKE ? ORDER BY id DESC",
+                        (user_id, f"%{w}%")
+                    )
+                    for row in cursor.fetchall():
+                        d = dict(row)
+                        results[d["id"]] = d
+
+                return list(results.values())
+        except Exception as e:
+            logger.error(f"Error searching notes for user {user_id}: {e}", exc_info=True)
+            return []
+
 
 notes_service = NotesService()

@@ -1,0 +1,362 @@
+import os
+import tempfile
+import unittest
+from datetime import date, datetime, timedelta
+from unittest.mock import AsyncMock, patch
+
+from app.agent.agent import GrootAgent
+from app.agent.providers import LLMProvider, LLMTurnResponse, ToolCallRequest
+from app.agent.schemas import ToolExecutionContext
+from app.agent.registry import build_default_registry
+from app.config import settings
+from app.services.tasks import tasks_service
+from app.services.scheduler import scheduler_service
+from app.services.calendar import calendar_service
+from app.services.context import context_service
+from app.utils.timezone import get_now, get_today
+
+
+class MockLLMProvider(LLMProvider):
+    def __init__(self, responses=None):
+        self.responses = responses or []
+        self.call_history = []
+
+    def queue_turn(self, turn_response: LLMTurnResponse):
+        self.responses.append(turn_response)
+
+    async def generate_turn(self, messages, tools=None):
+        self.call_history.append(messages)
+        if self.responses:
+            return self.responses.pop(0)
+        return LLMTurnResponse(content="🌴 Готово!", tool_calls=[])
+
+
+class TestAgentMultiAction(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.tmp_dir = tempfile.TemporaryDirectory()
+        self.db_path = os.path.join(self.tmp_dir.name, "test_agent.db")
+        settings.DATABASE_PATH = self.db_path
+        tasks_service.db_path = self.db_path
+        tasks_service._init_db()
+
+        if not scheduler_service.scheduler.running:
+            scheduler_service.start()
+
+        self.user_id = 55555
+        self.chat_id = 55555
+        context_service.clear_context(self.user_id)
+
+        self.mock_provider = MockLLMProvider()
+        self.registry = build_default_registry()
+        self.agent = GrootAgent(registry=self.registry, provider=self.mock_provider)
+
+    async def asyncTearDown(self):
+        try:
+            self.tmp_dir.cleanup()
+        except Exception:
+            pass
+        context_service.clear_context(self.user_id)
+
+    async def test_acceptance_1_single_reminder(self):
+        """
+        Input: 'Напомни завтра в 15:00 позвонить Саше'
+        Expected: tool create_reminder executed, confirmation returned.
+        """
+        now = get_now()
+        tomorrow_15 = (now + timedelta(days=1)).strftime("%Y-%m-%d 15:00:00")
+
+        # LLM emits create_reminder tool call
+        self.mock_provider.queue_turn(LLMTurnResponse(
+            tool_calls=[
+                ToolCallRequest(
+                    id="call_1",
+                    name="create_reminder",
+                    arguments={"message": "Позвонить Саше", "trigger_at": tomorrow_15}
+                )
+            ]
+        ))
+        # After tool returns, LLM generates natural final response
+        self.mock_provider.queue_turn(LLMTurnResponse(
+            content="🌴 Готово! Напомню завтра в 15:00 позвонить Саше."
+        ))
+
+        res = await self.agent.process_message(self.user_id, self.chat_id, "Напомни завтра в 15:00 позвонить Саше")
+        self.assertEqual(res.tool_calls_count, 1)
+        self.assertIn("Саше", res.reply_text)
+
+    async def test_acceptance_2_clarify_missing_time(self):
+        """
+        Input: 'Напомни завтра позвонить Саше'
+        Expected: Agent does not invent time, asks clarifying question: 'Во сколько?'
+        """
+        self.mock_provider.queue_turn(LLMTurnResponse(
+            content="🌴 Во сколько завтра напомнить позвонить Саше?"
+        ))
+
+        res = await self.agent.process_message(self.user_id, self.chat_id, "Напомни завтра позвонить Саше")
+        self.assertEqual(res.tool_calls_count, 0)
+        self.assertIn("Во сколько", res.reply_text)
+
+    async def test_acceptance_3_context_followup(self):
+        """
+        Turn 1: 'Напомни завтра позвонить Саше' -> Bot asks 'Во сколько?'
+        Turn 2: 'В 15' -> Agent uses previous context to schedule reminder
+        """
+        # Turn 1
+        self.mock_provider.queue_turn(LLMTurnResponse(
+            content="🌴 Во сколько завтра напомнить позвонить Саше?"
+        ))
+        await self.agent.process_message(self.user_id, self.chat_id, "Напомни завтра позвонить Саше")
+
+        # Turn 2: User says "В 15"
+        now = get_now()
+        tomorrow_15 = (now + timedelta(days=1)).strftime("%Y-%m-%d 15:00:00")
+
+        self.mock_provider.queue_turn(LLMTurnResponse(
+            tool_calls=[
+                ToolCallRequest(
+                    id="call_followup",
+                    name="create_reminder",
+                    arguments={"message": "Позвонить Саше", "trigger_at": tomorrow_15}
+                )
+            ]
+        ))
+        self.mock_provider.queue_turn(LLMTurnResponse(
+            content="🌴 Договорились! Напомню завтра в 15:00 позвонить Саше."
+        ))
+
+        res2 = await self.agent.process_message(self.user_id, self.chat_id, "В 15")
+        self.assertEqual(res2.tool_calls_count, 1)
+        self.assertIn("15:00", res2.reply_text)
+
+    async def test_acceptance_4_combined_calendar_and_reminder(self):
+        """
+        Input: 'Завтра стоматолог в 15:00, добавь в календарь и напомни за час'
+        Expected: 2 tool calls: create_calendar_event at 15:00 AND create_reminder at 14:00
+        """
+        now = get_now()
+        tomorrow = now + timedelta(days=1)
+        event_start = tomorrow.strftime("%Y-%m-%dT15:00:00")
+        reminder_at = tomorrow.strftime("%Y-%m-%d 14:00:00")
+
+        mock_event = {"id": "ev_1", "summary": "Стоматолог", "htmlLink": "https://..."}
+
+        with patch.object(calendar_service, "is_configured", return_value=True), \
+             patch.object(calendar_service, "create_event", new=AsyncMock(return_value=mock_event)):
+
+            self.mock_provider.queue_turn(LLMTurnResponse(
+                tool_calls=[
+                    ToolCallRequest(
+                        id="c1",
+                        name="create_calendar_event",
+                        arguments={"title": "Стоматолог", "start_time": event_start}
+                    ),
+                    ToolCallRequest(
+                        id="c2",
+                        name="create_reminder",
+                        arguments={"message": "Стоматолог через час", "trigger_at": reminder_at}
+                    )
+                ]
+            ))
+            self.mock_provider.queue_turn(LLMTurnResponse(
+                content="🌴 Готово! Событие «Стоматолог» добавлено в календарь на 15:00, и напоминание установлено на 14:00."
+            ))
+
+            res = await self.agent.process_message(
+                self.user_id,
+                self.chat_id,
+                "Завтра стоматолог в 15:00, добавь в календарь и напомни за час"
+            )
+            self.assertEqual(res.tool_calls_count, 2)
+            self.assertIn("Стоматолог", res.reply_text)
+
+    async def test_acceptance_5_get_schedule(self):
+        """
+        Input: 'Что у меня завтра?'
+        Expected: get_schedule called with tomorrow's date
+        """
+        tomorrow_str = (get_today() + timedelta(days=1)).strftime("%Y-%m-%d")
+
+        self.mock_provider.queue_turn(LLMTurnResponse(
+            tool_calls=[
+                ToolCallRequest(
+                    id="sched_1",
+                    name="get_schedule",
+                    arguments={"start_date": tomorrow_str}
+                )
+            ]
+        ))
+        self.mock_provider.queue_turn(LLMTurnResponse(
+            content="🌴 На завтра у вас запланировано: 1 задача и 1 напоминание."
+        ))
+
+        res = await self.agent.process_message(self.user_id, self.chat_id, "Что у меня завтра?")
+        self.assertEqual(res.tool_calls_count, 1)
+        self.assertEqual(res.executed_tools[0]["name"], "get_schedule")
+
+    async def test_acceptance_6_search_everything(self):
+        """
+        Input: 'Найди когда у меня стоматолог'
+        Expected: search_everything called with 'стоматолог'
+        """
+        self.mock_provider.queue_turn(LLMTurnResponse(
+            tool_calls=[
+                ToolCallRequest(
+                    id="search_1",
+                    name="search_everything",
+                    arguments={"query": "стоматолог"}
+                )
+            ]
+        ))
+        self.mock_provider.queue_turn(LLMTurnResponse(
+            content="🌴 Нашёл: событие «Стоматолог» в календаре на 15:00 завтра."
+        ))
+
+        res = await self.agent.process_message(self.user_id, self.chat_id, "Найди когда у меня стоматолог")
+        self.assertEqual(res.tool_calls_count, 1)
+        self.assertEqual(res.executed_tools[0]["name"], "search_everything")
+
+    async def test_acceptance_7_search_then_move(self):
+        """
+        Input: 'Перенеси стоматолога на пятницу'
+        Expected: Search first, then move task.
+        """
+        # Create a task first in DB
+        task_id = await tasks_service.add_task(self.user_id, "Стоматолог", target_date=get_today())
+
+        # Step 1: Agent calls search_tasks
+        self.mock_provider.queue_turn(LLMTurnResponse(
+            tool_calls=[
+                ToolCallRequest(
+                    id="step1",
+                    name="search_tasks",
+                    arguments={"query": "стоматолог"}
+                )
+            ]
+        ))
+        # Step 2: Agent sees the task #{task_id}, calls move_task to Friday
+        friday_str = (get_today() + timedelta(days=1)).strftime("%Y-%m-%d")
+        self.mock_provider.queue_turn(LLMTurnResponse(
+            tool_calls=[
+                ToolCallRequest(
+                    id="step2",
+                    name="move_task",
+                    arguments={"task_id": task_id, "target_date": friday_str}
+                )
+            ]
+        ))
+        # Step 3: Final response
+        self.mock_provider.queue_turn(LLMTurnResponse(
+            content="🌴 Перенёс приём у стоматолога на пятницу!"
+        ))
+
+        res = await self.agent.process_message(self.user_id, self.chat_id, "Перенеси стоматолога на пятницу")
+        self.assertEqual(res.tool_calls_count, 2)
+        self.assertEqual(res.executed_tools[0]["name"], "search_tasks")
+        self.assertEqual(res.executed_tools[1]["name"], "move_task")
+        self.assertIn("пятницу", res.reply_text)
+
+    async def test_acceptance_8_destructive_clear_confirmation(self):
+        """
+        Input: 'Удали все задачи'
+        Expected: clear_tasks returns confirmation_required, agent asks user to confirm.
+        Follow-up: 'Да, удали' -> confirms and executes.
+        """
+        self.mock_provider.queue_turn(LLMTurnResponse(
+            tool_calls=[
+                ToolCallRequest(
+                    id="clear_1",
+                    name="clear_tasks",
+                    arguments={"target_date": None, "confirmed": False}
+                )
+            ]
+        ))
+
+        res = await self.agent.process_message(self.user_id, self.chat_id, "Удали все задачи")
+        self.assertTrue(res.requires_confirmation)
+        self.assertIn("подтверждение", res.reply_text.lower())
+
+        # Follow-up: User confirms
+        res_conf = await self.agent.process_message(self.user_id, self.chat_id, "Да, подтверждаю")
+        self.assertIn("Удалено", res_conf.reply_text)
+
+    async def test_acceptance_9_save_note(self):
+        """
+        Input: 'Запомни, что пароль от тестового сервера хранится в Bitwarden'
+        Expected: create_note called, not create_task
+        """
+        self.mock_provider.queue_turn(LLMTurnResponse(
+            tool_calls=[
+                ToolCallRequest(
+                    id="note_1",
+                    name="create_note",
+                    arguments={"content": "Пароль от тестового сервера хранится в Bitwarden"}
+                )
+            ]
+        ))
+        self.mock_provider.queue_turn(LLMTurnResponse(
+            content="🌴 Запомнил! Заметка сохранена."
+        ))
+
+        res = await self.agent.process_message(
+            self.user_id,
+            self.chat_id,
+            "Запомни, что пароль от тестового сервера хранится в Bitwarden"
+        )
+        self.assertEqual(res.tool_calls_count, 1)
+        self.assertEqual(res.executed_tools[0]["name"], "create_note")
+
+    async def test_acceptance_10_recurring_habit(self):
+        """
+        Input: 'Каждый день в 9 утра напоминай пить воду'
+        Expected: create_recurring_task called with repeat_type='daily' and time_of_day='09:00'
+        """
+        self.mock_provider.queue_turn(LLMTurnResponse(
+            tool_calls=[
+                ToolCallRequest(
+                    id="rec_1",
+                    name="create_recurring_task",
+                    arguments={"title": "Пить воду", "repeat_type": "daily", "time_of_day": "09:00"}
+                )
+            ]
+        ))
+        self.mock_provider.queue_turn(LLMTurnResponse(
+            content="🌴 Отлично! Создал ежедневную привычку «Пить воду» на 09:00."
+        ))
+
+        res = await self.agent.process_message(
+            self.user_id,
+            self.chat_id,
+            "Каждый день в 9 утра напоминай пить воду"
+        )
+        self.assertEqual(res.tool_calls_count, 1)
+        self.assertEqual(res.executed_tools[0]["name"], "create_recurring_task")
+
+    async def test_acceptance_11_multitask_batch(self):
+        """
+        Input: Multitask message with 3 tasks and 1 reminder
+        Expected: 3 create_task calls + 1 create_reminder call (4 tool calls total)
+        """
+        now = get_now()
+        rem_time = (now + timedelta(hours=3)).strftime("%Y-%m-%d 18:00:00")
+        today_str = get_today().strftime("%Y-%m-%d")
+
+        self.mock_provider.queue_turn(LLMTurnResponse(
+            tool_calls=[
+                ToolCallRequest(id="t1", name="create_task", arguments={"text": "Купить корм", "target_date": today_str}),
+                ToolCallRequest(id="t2", name="create_task", arguments={"text": "Проверить сервер", "target_date": today_str}),
+                ToolCallRequest(id="t3", name="create_task", arguments={"text": "Написать Саше", "target_date": today_str}),
+                ToolCallRequest(id="r1", name="create_reminder", arguments={"message": "Проверить сервер", "trigger_at": rem_time}),
+            ]
+        ))
+        self.mock_provider.queue_turn(LLMTurnResponse(
+            content="🌴 Всё записал: 3 задачи на сегодня и напоминание про сервер на 18:00!"
+        ))
+
+        input_text = "Сегодня:\n- купить корм\n- проверить сервер\n- написать Саше\nНапомни в 18:00 про сервер"
+        res = await self.agent.process_message(self.user_id, self.chat_id, input_text)
+        self.assertEqual(res.tool_calls_count, 4)
+
+
+if __name__ == "__main__":
+    unittest.main()

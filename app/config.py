@@ -29,6 +29,10 @@ class Settings(BaseSettings):
     QUIET_HOURS_END: str = "08:00"
     AUTO_ROLLOVER_UNCOMPLETED_TASKS: bool = False
 
+    AGENT_MAX_ITERATIONS: int = 8
+    AGENT_HISTORY_LIMIT: int = 10
+    AGENT_CONFIRM_DESTRUCTIVE: bool = True
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

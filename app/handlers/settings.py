@@ -11,6 +11,8 @@ from typing import Union, Optional
 from app.config import settings
 from app.services.obsidian import obsidian_service
 from app.services.llm import llm_service
+from app.agent.providers import llm_provider
+from app.agent import groot_agent
 from app.services.calendar import calendar_service
 from app.services.scheduler import scheduler_service
 from app.services.goals import goals_service
@@ -710,6 +712,8 @@ async def process_new_setting_value(message: Message, state: FSMContext):
         obsidian_service.__init__()
     elif key_name in ["GROQ_API_KEY", "GEMINI_API_KEY"]:
         llm_service.__init__()
+        llm_provider.__init__()
+        groot_agent.__init__()
     elif key_name == "GOOGLE_CALENDAR_ID":
         calendar_service._init_service()
 

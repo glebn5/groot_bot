@@ -10,6 +10,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.filters import Command
 
 from app.config import settings
+from app.agent import groot_agent
 from app.models.schemas import ParsedAction
 from app.services.llm import llm_service
 from app.services.obsidian import obsidian_service
@@ -1571,10 +1572,12 @@ async def handle_text_message(message: Message, bot: Bot, state: FSMContext):
     logger.info(f"Received text message from {user_info}: '{message.text}'")
     await bot.send_chat_action(chat_id=message.chat.id, action=ChatAction.TYPING)
     try:
-        ctx_date = context_service.get_last_date(message.chat.id)
-        parsed_action = await llm_service.parse_user_request(text_content=message.text, context_date=ctx_date)
-        reply_text, reply_markup = await execute_action_pipeline(bot, message.chat.id, parsed_action, state=state, user_text=message.text)
-        await safe_answer_markdown(message, reply_text, reply_markup=reply_markup)
+        agent_res = await groot_agent.process_message(
+            user_id=message.from_user.id,
+            chat_id=message.chat.id,
+            user_text=message.text
+        )
+        await safe_answer_markdown(message, agent_res.reply_text)
     except Exception as e:
-        logger.error(f"Error handling text message: {e}", exc_info=True)
+        logger.error(f"Error handling text message with GrootAgent: {e}", exc_info=True)
         await message.answer(f"❌ Произошла ошибка при обработке запроса: {str(e)}", parse_mode=None)

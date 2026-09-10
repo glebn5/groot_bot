@@ -3,11 +3,11 @@ import logging
 from aiogram import Router, Bot, F
 from aiogram.enums import ChatAction
 from aiogram.types import Message
-
 from aiogram.fsm.context import FSMContext
 
-from app.services.llm import llm_service
-from app.handlers.text import execute_action_pipeline, safe_answer_markdown
+from app.agent import groot_agent
+from app.agent.providers import llm_provider
+from app.handlers.text import safe_answer_markdown
 
 logger = logging.getLogger(__name__)
 router = Router(name="media")
@@ -16,7 +16,7 @@ router = Router(name="media")
 @router.message(F.photo | F.document)
 async def handle_media_message(message: Message, bot: Bot, state: FSMContext):
     await bot.send_chat_action(chat_id=message.chat.id, action=ChatAction.UPLOAD_PHOTO)
-    
+
     caption = message.caption or ""
     image_bytes = None
     mime_type = "image/jpeg"
@@ -45,15 +45,41 @@ async def handle_media_message(message: Message, bot: Bot, state: FSMContext):
             await message.answer("❌ Не удалось загрузить изображение.")
             return
 
-        logger.info(f"Processing media image message with vision LLM. Caption: '{caption}'")
-        parsed_action = await llm_service.parse_user_request(
-            text_content=caption,
+        logger.info(f"Processing media image message with vision. Caption: '{caption}'")
+        extracted_text = await llm_provider.extract_vision_text(
             image_bytes=image_bytes,
-            mime_type=mime_type
+            mime_type=mime_type,
+            user_caption=caption
         )
-        
-        reply_text, reply_markup = await execute_action_pipeline(bot, message.chat.id, parsed_action, state=state, user_text=caption)
-        await safe_answer_markdown(message, reply_text, reply_markup=reply_markup)
+
+        if extracted_text:
+            combined_request = f"[Распознанное содержимое фото/документа]:\n{extracted_text}"
+            if caption:
+                combined_request += f"\n\nПросьба пользователя: {caption}"
+            else:
+                combined_request += "\n\nПожалуйста, проанализируй это и создай соответствующие события, напоминания или задачи."
+
+            agent_res = await groot_agent.process_message(
+                user_id=message.from_user.id,
+                chat_id=message.chat.id,
+                user_text=combined_request
+            )
+            await safe_answer_markdown(message, agent_res.reply_text)
+        elif caption and caption.strip():
+            # If vision not configured but user supplied caption, process caption
+            agent_res = await groot_agent.process_message(
+                user_id=message.from_user.id,
+                chat_id=message.chat.id,
+                user_text=caption
+            )
+            await safe_answer_markdown(message, agent_res.reply_text)
+        else:
+            instruction = (
+                "🌴 Я получил фото! Чтобы я мог автоматически считывать с него текст (талоны к врачу, чеки, справки), "
+                "укажите бесплатный **Gemini API Key** через команду `/settings`. "
+                "Либо отправьте фото вместе с текстом-описанием того, что нужно сделать!"
+            )
+            await message.answer(instruction, parse_mode="Markdown")
 
     except Exception as e:
         logger.error(f"Error handling media vision message: {e}", exc_info=True)

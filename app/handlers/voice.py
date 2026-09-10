@@ -8,9 +8,8 @@ from aiogram.types import Message
 from aiogram.fsm.context import FSMContext
 
 from app.services.stt import stt_service
-from app.services.llm import llm_service
-from app.services.context import context_service
-from app.handlers.text import execute_action_pipeline, safe_answer_markdown
+from app.agent import groot_agent
+from app.handlers.text import safe_answer_markdown
 
 logger = logging.getLogger(__name__)
 router = Router(name="voice")
@@ -45,13 +44,14 @@ async def handle_voice_message(message: Message, bot: Bot, state: FSMContext):
         # Inform user of transcribed text
         await safe_answer_markdown(message, f"🎙 **Расшифровка голоса:**\n\n{transcribed_text}")
 
-        # Process request with LLM & execute pipeline
+        # Process request with Groot Agent
         await bot.send_chat_action(chat_id=message.chat.id, action=ChatAction.TYPING)
-        ctx_date = context_service.get_last_date(message.chat.id)
-        parsed_action = await llm_service.parse_user_request(text_content=transcribed_text, context_date=ctx_date)
-        reply_text, reply_markup = await execute_action_pipeline(bot, message.chat.id, parsed_action, state=state, user_text=transcribed_text)
-        
-        await safe_answer_markdown(message, reply_text, reply_markup=reply_markup)
+        agent_res = await groot_agent.process_message(
+            user_id=message.from_user.id,
+            chat_id=message.chat.id,
+            user_text=transcribed_text
+        )
+        await safe_answer_markdown(message, agent_res.reply_text)
 
     except Exception as e:
         logger.error(f"Error handling voice message: {e}", exc_info=True)
