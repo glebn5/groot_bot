@@ -29,9 +29,11 @@ async def create_task(context: ToolExecutionContext, text: str, target_date: Opt
         return ToolResult(success=False, error_code="invalid_argument", message="Task text cannot be empty.")
 
     clean_text = text.strip()
-    t_date = parse_date_str(target_date) if target_date else get_today()
+    t_date = parse_date_str(target_date) if target_date else None
     if not t_date:
-        t_date = get_today()
+        # Fall back to recently discussed date in user context, or today
+        ctx_date = context_service.get_last_date(context.user_id)
+        t_date = ctx_date or get_today()
 
     # Idempotency check: check if same task was added today
     existing_tasks = await tasks_service.get_tasks(context.user_id, t_date)

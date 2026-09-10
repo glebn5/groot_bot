@@ -107,7 +107,7 @@ def build_default_registry() -> ToolRegistry:
             "type": "object",
             "properties": {
                 "text": {"type": "string", "description": "Текст задачи (например: 'Купить молоко')"},
-                "target_date": {"type": "string", "description": "Целевая дата (например '2026-09-11', 'завтра' или null для сегодня)"}
+                "target_date": {"type": "string", "description": "Целевая дата (например '2026-09-11', 'завтра'). Если пользователь пишет 'закинь еще...', 'добавь еще...' после обсуждения планов на завтра или другую дату, укажи эту обсуждавшуюся дату!"}
             },
             "required": ["text"]
         },

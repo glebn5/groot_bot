@@ -194,6 +194,58 @@ class TestAgentMultiAction(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(res.tool_calls_count, 1)
         self.assertEqual(res.executed_tools[0]["name"], "get_schedule")
 
+    async def test_contextual_date_inheritance_after_schedule_query(self):
+        """
+        Turn 1: User: 'что на завтра' -> Agent shows schedule for tomorrow
+        Turn 2: User: 'закинь еще: купить булки' -> Task saved on tomorrow, NOT today
+        """
+        tomorrow = get_today() + timedelta(days=1)
+        tomorrow_str = tomorrow.strftime("%Y-%m-%d")
+
+        # Turn 1
+        self.mock_provider.queue_turn(LLMTurnResponse(
+            tool_calls=[
+                ToolCallRequest(
+                    id="sched_1",
+                    name="get_schedule",
+                    arguments={"start_date": tomorrow_str}
+                )
+            ]
+        ))
+        self.mock_provider.queue_turn(LLMTurnResponse(
+            content=f"✨ План на завтра, {tomorrow_str}: 1 задача."
+        ))
+        await self.agent.process_message(self.user_id, self.chat_id, "что на завтра")
+
+        # Verify context date was set to tomorrow
+        self.assertEqual(context_service.get_last_date(self.user_id), tomorrow)
+
+        # Turn 2: User says "закинь еще: купить булки"
+        self.mock_provider.queue_turn(LLMTurnResponse(
+            tool_calls=[
+                ToolCallRequest(
+                    id="task_followup",
+                    name="create_task",
+                    arguments={"text": "купить булки"}
+                )
+            ]
+        ))
+        self.mock_provider.queue_turn(LLMTurnResponse(
+            content=f"🌴 Задача «купить булки» добавлена на завтра, {tomorrow_str}!"
+        ))
+
+        res2 = await self.agent.process_message(self.user_id, self.chat_id, "закинь еще: купить булки")
+        self.assertEqual(res2.tool_calls_count, 1)
+
+        # Check that task in DB was created for tomorrow, NOT today
+        tasks_tomorrow = await tasks_service.get_tasks(self.user_id, tomorrow)
+        self.assertEqual(len(tasks_tomorrow), 1)
+        self.assertEqual(tasks_tomorrow[0]["task_text"], "купить булки")
+
+        # Ensure no tasks were added to today
+        tasks_today = await tasks_service.get_tasks(self.user_id, get_today())
+        self.assertEqual(len(tasks_today), 0)
+
     async def test_acceptance_6_search_everything(self):
         """
         Input: 'Найди когда у меня стоматолог'
