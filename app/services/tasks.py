@@ -343,8 +343,8 @@ class TasksService:
 
                 for w in clean_words:
                     cursor.execute(
-                        "SELECT id, task_text, target_date, is_completed, created_at FROM user_tasks WHERE user_id = ? AND lower(task_text) LIKE ? ORDER BY target_date ASC, is_completed ASC, id ASC",
-                        (user_id, f"%{w}%")
+                        "SELECT id, task_text, target_date, is_completed, created_at FROM user_tasks WHERE user_id = ? AND (lower(task_text) LIKE ? OR target_date LIKE ?) ORDER BY target_date ASC, is_completed ASC, id ASC",
+                        (user_id, f"%{w}%", f"%{w}%")
                     )
                     for row in cursor.fetchall():
                         d = dict(row)

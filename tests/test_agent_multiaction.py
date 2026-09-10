@@ -45,12 +45,25 @@ class TestAgentMultiAction(unittest.IsolatedAsyncioTestCase):
         self.user_id = 55555
         self.chat_id = 55555
         context_service.clear_context(self.user_id)
+        self._cleanup_reminders()
 
         self.mock_provider = MockLLMProvider()
         self.registry = build_default_registry()
         self.agent = GrootAgent(registry=self.registry, provider=self.mock_provider)
 
+    def _cleanup_reminders(self):
+        try:
+            for job in list(scheduler_service.scheduler.get_jobs()):
+                if job.args and len(job.args) > 0 and job.args[0] == self.chat_id:
+                    try:
+                        job.remove()
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
     async def asyncTearDown(self):
+        self._cleanup_reminders()
         try:
             self.tmp_dir.cleanup()
         except Exception:
@@ -245,6 +258,111 @@ class TestAgentMultiAction(unittest.IsolatedAsyncioTestCase):
         # Ensure no tasks were added to today
         tasks_today = await tasks_service.get_tasks(self.user_id, get_today())
         self.assertEqual(len(tasks_today), 0)
+
+    async def test_add_task_with_date_and_prefix_cleaned_no_reminder(self):
+        """
+        Input: 'добавь на завтра: пофиксить бота'
+        Expected:
+        - task_text cleaned of prefix -> 'пофиксить бота'
+        - target_date = tomorrow
+        - NO reminder created
+        """
+        tomorrow = get_today() + timedelta(days=1)
+        tomorrow_str = tomorrow.strftime("%Y-%m-%d")
+
+        self.mock_provider.queue_turn(LLMTurnResponse(
+            tool_calls=[
+                ToolCallRequest(
+                    id="fix_bot",
+                    name="create_task",
+                    arguments={"text": "добавь на завтра: пофиксить бота", "target_date": tomorrow_str}
+                )
+            ]
+        ))
+        self.mock_provider.queue_turn(LLMTurnResponse(
+            content="🌴 Добавил задачу «пофиксить бота» на завтра!"
+        ))
+
+        res = await self.agent.process_message(self.user_id, self.chat_id, "добавь на завтра: пофиксить бота")
+        self.assertEqual(res.tool_calls_count, 1)
+        self.assertEqual(res.executed_tools[0]["name"], "create_task")
+
+        tasks_tomorrow = await tasks_service.get_tasks(self.user_id, tomorrow)
+        self.assertEqual(len(tasks_tomorrow), 1)
+        self.assertEqual(tasks_tomorrow[0]["task_text"], "пофиксить бота")
+
+        # Verify NO reminders were scheduled
+        rems = scheduler_service.get_reminders_for_date(tomorrow, chat_id=self.chat_id)
+        self.assertEqual(len(rems), 0)
+
+    async def test_contextual_date_inheritance_today(self):
+        """
+        Turn 1: User: 'что на сегодня' -> Agent shows schedule for today
+        Turn 2: User: 'добавь ещё позвонить Ивану' -> Task saved on today with cleaned text
+        """
+        today = get_today()
+        today_str = today.strftime("%Y-%m-%d")
+
+        self.mock_provider.queue_turn(LLMTurnResponse(
+            tool_calls=[
+                ToolCallRequest(
+                    id="sched_today",
+                    name="get_schedule",
+                    arguments={"start_date": today_str}
+                )
+            ]
+        ))
+        self.mock_provider.queue_turn(LLMTurnResponse(
+            content=f"✨ План на сегодня, {today_str}."
+        ))
+        await self.agent.process_message(self.user_id, self.chat_id, "что на сегодня")
+
+        self.mock_provider.queue_turn(LLMTurnResponse(
+            tool_calls=[
+                ToolCallRequest(
+                    id="add_ivan",
+                    name="create_task",
+                    arguments={"text": "добавь ещё позвонить Ивану"}
+                )
+            ]
+        ))
+        self.mock_provider.queue_turn(LLMTurnResponse(
+            content="🌴 Задача «позвонить Ивану» добавлена на сегодня!"
+        ))
+
+        res2 = await self.agent.process_message(self.user_id, self.chat_id, "добавь ещё позвонить Ивану")
+        self.assertEqual(res2.tool_calls_count, 1)
+
+        tasks_today = await tasks_service.get_tasks(self.user_id, today)
+        self.assertEqual(len(tasks_today), 1)
+        self.assertEqual(tasks_today[0]["task_text"], "позвонить Ивану")
+
+    async def test_move_last_discussed_task_context_reference(self):
+        """
+        Turn 1: Task created in context
+        Turn 2: User: 'перенеси его на пятницу' -> Agent uses last discussed task ID from context
+        """
+        res1 = await self.registry.execute("create_task", {"text": "пофиксить бота", "target_date": "2026-09-11"}, ToolExecutionContext(user_id=self.user_id, chat_id=self.chat_id))
+        task_id = res1.entity_id
+
+        self.mock_provider.queue_turn(LLMTurnResponse(
+            tool_calls=[
+                ToolCallRequest(
+                    id="move_it",
+                    name="move_task",
+                    arguments={"target_date": "2026-09-12"}
+                )
+            ]
+        ))
+        self.mock_provider.queue_turn(LLMTurnResponse(
+            content="🌴 Перенёс задачу «пофиксить бота» на 12.09.2026!"
+        ))
+
+        res2 = await self.agent.process_message(self.user_id, self.chat_id, "перенеси его на пятницу")
+        self.assertEqual(res2.tool_calls_count, 1)
+
+        updated_task = await tasks_service.get_task_by_id(self.user_id, task_id)
+        self.assertEqual(updated_task["target_date"], "2026-09-12")
 
     async def test_acceptance_6_search_everything(self):
         """

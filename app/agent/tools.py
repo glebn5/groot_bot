@@ -29,7 +29,26 @@ async def create_task(context: ToolExecutionContext, text: str, target_date: Opt
         return ToolResult(success=False, error_code="invalid_argument", message="Task text cannot be empty.")
 
     clean_text = text.strip()
+    import re
+
+    # If target_date wasn't explicitly passed, check if text contains date phrase like "на завтра", "на пятницу"
     t_date = parse_date_str(target_date) if target_date else None
+    if not t_date:
+        date_match = re.search(r'\bна\s+(сегодня|завтра|послезавтра|понедельник|вторник|среду|среда|четверг|пятницу|пятница|субботу|суббота|воскресенье|\d{1,2}\s+[а-яё]+)\b', clean_text.lower())
+        if date_match:
+            t_date = parse_date_str(date_match.group(1))
+
+    # Strip operational command prefixes (e.g. "добавь на завтра:", "поставь задачу:", "закинь еще:")
+    clean_text = re.sub(
+        r'^(?:добавь|поставь|закинь|создай|запиши|напиши)\s+(?:мне\s+)?(?:еще\s+|ещё\s+)?(?:задачу\s+)?(?:на\s+[^\s:]+\s*)?[:\-]?\s*',
+        '',
+        clean_text,
+        flags=re.IGNORECASE
+    ).strip()
+    clean_text = re.sub(r'^(?:задача|дело|план)[:\-]?\s*', '', clean_text, flags=re.IGNORECASE).strip()
+    if not clean_text:
+        clean_text = text.strip()
+
     if not t_date:
         # Fall back to recently discussed date in user context, or today
         ctx_date = context_service.get_last_date(context.user_id)
@@ -111,10 +130,17 @@ async def search_tasks(context: ToolExecutionContext, query: str) -> ToolResult:
         return ToolResult(success=False, error_code="db_error", message=str(e))
 
 
-async def complete_task(context: ToolExecutionContext, task_id: int) -> ToolResult:
+async def complete_task(context: ToolExecutionContext, task_id: Optional[int] = None) -> ToolResult:
     """
-    Marks a task as completed by ID.
+    Marks a task as completed by ID (or the last discussed task if task_id is not specified).
     """
+    if not task_id:
+        last_t = context_service.get_last_entity(context.user_id, "task")
+        if last_t and "id" in last_t:
+            task_id = last_t["id"]
+        else:
+            return ToolResult(success=False, error_code="not_found", message="Не удалось определить, какую именно задачу завершить. Уточните название.")
+
     try:
         task = await tasks_service.get_task_by_id(context.user_id, task_id)
         if not task:
@@ -135,10 +161,18 @@ async def complete_task(context: ToolExecutionContext, task_id: int) -> ToolResu
         return ToolResult(success=False, error_code="db_error", message=str(e))
 
 
-async def move_task(context: ToolExecutionContext, task_id: int, target_date: str, new_time: Optional[str] = None) -> ToolResult:
+async def move_task(context: ToolExecutionContext, target_date: str, task_id: Optional[int] = None, new_time: Optional[str] = None) -> ToolResult:
     """
-    Moves a task by ID to a new target date and optionally sets new time in task text.
+    Moves a task to a new target date and optionally sets new time in task text.
+    If task_id is not specified, uses the last discussed task from context.
     """
+    if not task_id:
+        last_t = context_service.get_last_entity(context.user_id, "task")
+        if last_t and "id" in last_t:
+            task_id = last_t["id"]
+        else:
+            return ToolResult(success=False, error_code="not_found", message="Не удалось определить, какую именно задачу перенести. Уточните название.")
+
     t_date = parse_date_str(target_date)
     if not t_date:
         return ToolResult(success=False, error_code="invalid_date", message=f"Не удалось распознать дату «{target_date}».")
@@ -184,13 +218,20 @@ async def move_task(context: ToolExecutionContext, task_id: int, target_date: st
 
 async def update_task(
     context: ToolExecutionContext,
-    task_id: int,
+    task_id: Optional[int] = None,
     new_text: Optional[str] = None,
     target_date: Optional[str] = None
 ) -> ToolResult:
     """
-    Updates the text and/or target date of an existing task by ID.
+    Updates the text and/or target date of an existing task by ID (or the last discussed task).
     """
+    if not task_id:
+        last_t = context_service.get_last_entity(context.user_id, "task")
+        if last_t and "id" in last_t:
+            task_id = last_t["id"]
+        else:
+            return ToolResult(success=False, error_code="not_found", message="Не удалось определить задачу для обновления.")
+
     try:
         task = await tasks_service.get_task_by_id(context.user_id, task_id)
         if not task:
@@ -217,10 +258,17 @@ async def update_task(
         return ToolResult(success=False, error_code="db_error", message=str(e))
 
 
-async def delete_task(context: ToolExecutionContext, task_id: int) -> ToolResult:
+async def delete_task(context: ToolExecutionContext, task_id: Optional[int] = None) -> ToolResult:
     """
-    Deletes a single task by ID.
+    Deletes a single task by ID (or the last discussed task).
     """
+    if not task_id:
+        last_t = context_service.get_last_entity(context.user_id, "task")
+        if last_t and "id" in last_t:
+            task_id = last_t["id"]
+        else:
+            return ToolResult(success=False, error_code="not_found", message="Не удалось определить задачу для удаления.")
+
     try:
         task = await tasks_service.get_task_by_id(context.user_id, task_id)
         if not task:

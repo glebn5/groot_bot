@@ -617,8 +617,10 @@ async def process_close_settings(event: Union[Message, CallbackQuery], state: FS
         await event.answer(msg_text, reply_markup=reply_markup, parse_mode="Markdown")
 
 
-@router.message(Command("cancel"), FSMContext)
-@router.message(F.text.in_({"cancel", "/cancel", "отмена", "Отмена", "❌ Отмена", "🔙 Отмена"}), FSMContext)
+@router.message(Command("cancel"), SettingsForm.waiting_for_value)
+@router.message(Command("cancel"), SettingsForm.waiting_for_sa_file)
+@router.message(F.text.in_({"cancel", "/cancel", "отмена", "Отмена", "❌ Отмена", "🔙 Отмена"}), SettingsForm.waiting_for_value)
+@router.message(F.text.in_({"cancel", "/cancel", "отмена", "Отмена", "❌ Отмена", "🔙 Отмена"}), SettingsForm.waiting_for_sa_file)
 async def cmd_cancel_settings(message: Message, state: FSMContext):
     data = await state.get_data()
     cat = data.get("target_cat", "main")

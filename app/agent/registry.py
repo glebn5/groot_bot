@@ -143,13 +143,12 @@ def build_default_registry() -> ToolRegistry:
 
     registry.register(
         name="complete_task",
-        description="Отмечает задачу как выполненную по её ID.",
+        description="Отмечает задачу как выполненную по её ID (или последнюю обсуждавшуюся задачу).",
         parameters={
             "type": "object",
             "properties": {
-                "task_id": {"type": "integer", "description": "ID задачи"}
-            },
-            "required": ["task_id"]
+                "task_id": {"type": "integer", "description": "ID задачи (или null, если закрывается последняя обсуждавшаяся задача)"}
+            }
         },
         handler=t.complete_task
     )
@@ -157,17 +156,17 @@ def build_default_registry() -> ToolRegistry:
     registry.register(
         name="move_task",
         description=(
-            "Переносит задачу по ID на новую дату и при необходимости меняет указанное время. "
-            "Всегда сначала найди задачу через search_tasks или get_tasks, чтобы узнать точный ID!"
+            "Переносит задачу на новую дату и при необходимости меняет указанное время. "
+            "Если пользователь говорит 'перенеси её/его на завтра', можно указать ID последней обсуждавшейся задачи из контекста."
         ),
         parameters={
             "type": "object",
             "properties": {
-                "task_id": {"type": "integer", "description": "ID задачи"},
+                "task_id": {"type": "integer", "description": "ID задачи (или null, если используется последняя обсуждавшаяся задача)"},
                 "target_date": {"type": "string", "description": "Новая целевая дата (YYYY-MM-DD или 'пятница', 'завтра')"},
                 "new_time": {"type": "string", "description": "Новое время в формате HH:MM (если указано, или null)"}
             },
-            "required": ["task_id", "target_date"]
+            "required": ["target_date"]
         },
         handler=t.move_task
     )
@@ -178,24 +177,22 @@ def build_default_registry() -> ToolRegistry:
         parameters={
             "type": "object",
             "properties": {
-                "task_id": {"type": "integer", "description": "ID задачи"},
+                "task_id": {"type": "integer", "description": "ID задачи (или null, если используется последняя обсуждавшаяся задача)"},
                 "new_text": {"type": "string", "description": "Новый текст задачи"},
                 "target_date": {"type": "string", "description": "Новая дата задачи"}
-            },
-            "required": ["task_id"]
+            }
         },
         handler=t.update_task
     )
 
     registry.register(
         name="delete_task",
-        description="Удаляет одну конкретную задачу по её ID.",
+        description="Удаляет одну конкретную задачу по её ID (или последнюю обсуждавшуюся задачу).",
         parameters={
             "type": "object",
             "properties": {
-                "task_id": {"type": "integer", "description": "ID задачи"}
-            },
-            "required": ["task_id"]
+                "task_id": {"type": "integer", "description": "ID задачи (или null, если используется последняя обсуждавшаяся задача)"}
+            }
         },
         handler=t.delete_task
     )

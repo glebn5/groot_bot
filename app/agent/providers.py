@@ -27,8 +27,9 @@ class LLMProvider:
     Unified LLM provider supporting tool-calling with Groq primary and Gemini fallback.
     """
     def __init__(self):
-        self.groq_client = AsyncGroq(api_key=settings.GROQ_API_KEY)
+        self.groq_client = AsyncGroq(api_key=settings.GROQ_API_KEY, max_retries=1)
         self.groq_models = [
+            "llama-3.3-70b-versatile",
             "openai/gpt-oss-120b",
             "openai/gpt-oss-20b",
             "qwen/qwen3.6-27b",
