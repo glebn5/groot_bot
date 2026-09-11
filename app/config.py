@@ -11,7 +11,7 @@ class Settings(BaseSettings):
     GROQ_API_KEY: str
     GEMINI_API_KEY: str = ""
     PROXYAPI_KEY: str = ""
-    PROXYAPI_BASE_URL: str = "https://api.proxyapi.ru/openai/v1"
+    PROXYAPI_BASE_URL: str = "https://api.proxyapi.ru/v1"
     PROXYAPI_MODEL: str = "qwen/qwen3.8-flash"
     
     WEBDAV_HOSTNAME: str = "https://webdav.cloud.mail.ru"
@@ -19,7 +19,7 @@ class Settings(BaseSettings):
     WEBDAV_PASSWORD: str
     WEBDAV_VAULT_PATH: str = "/Vault"
     
-    GOOGLE_CALENDAR_ID: str = "primary"
+    GOOGLE_CALENDAR_ID: str = "glebnovikovsobko@gmail.com"
     GOOGLE_SERVICE_ACCOUNT_FILE: str = "credentials/service_account.json"
     
     DATABASE_PATH: str = "data/scheduler.db"

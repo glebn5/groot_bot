@@ -91,6 +91,24 @@ class GoalsService:
             logger.error(f"Error fetching goals for user {user_id}: {e}", exc_info=True)
             return []
 
+    async def get_goal_by_id(self, goal_id: int, user_id: int) -> Optional[Dict[str, Any]]:
+        """
+        Returns a single goal by goal_id owned by user_id, or None if not found.
+        """
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                conn.row_factory = sqlite3.Row
+                cursor = conn.cursor()
+                cursor.execute(
+                    "SELECT * FROM monthly_goals WHERE id = ? AND user_id = ?",
+                    (goal_id, user_id)
+                )
+                row = cursor.fetchone()
+                return dict(row) if row else None
+        except Exception as e:
+            logger.error(f"Error fetching goal {goal_id} for user {user_id}: {e}", exc_info=True)
+            return None
+
     async def toggle_goal(self, goal_id: int, user_id: int) -> Optional[bool]:
         """
         Toggles is_completed status for goal_id owned by user_id.

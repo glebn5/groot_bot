@@ -19,6 +19,36 @@ class GoalAddForm(StatesGroup):
     waiting_for_text = State()
 
 
+class GoalEditForm(StatesGroup):
+    waiting_for_new_text = State()
+
+
+def format_copyable_text(text: str) -> str:
+    clean = str(text or "").strip()
+    if not clean:
+        return "` ` "
+    clean_escaped = clean.replace("```", "` ` `")
+    if "\n" in clean_escaped:
+        return f"```\n{clean_escaped}\n```"
+    return f"`{clean_escaped}`"
+
+
+async def safe_answer_markdown(message: Message, text: str, reply_markup=None):
+    try:
+        await message.answer(text, reply_markup=reply_markup, parse_mode="Markdown")
+    except Exception as e:
+        logger.warning(f"Failed to answer with Markdown in goals: {e}")
+        await message.answer(text, reply_markup=reply_markup, parse_mode=None)
+
+
+async def safe_edit_markdown(message: Message, text: str, reply_markup=None):
+    try:
+        await message.edit_text(text, reply_markup=reply_markup, parse_mode="Markdown")
+    except Exception as e:
+        logger.warning(f"Failed to edit with Markdown in goals: {e}")
+        await message.edit_text(text, reply_markup=reply_markup, parse_mode=None)
+
+
 MONTH_NAMES_RU = {
     1: "Январь", 2: "Февраль", 3: "Март", 4: "Апрель",
     5: "Май", 6: "Июнь", 7: "Июль", 8: "Август",
@@ -89,6 +119,7 @@ async def render_goals_view(user_id: int, target_month: Optional[str] = None):
 
         buttons.append([
             InlineKeyboardButton(text=f"{icon} #{idx}", callback_data=f"toggle_g:{g_id}:{target_month}"),
+            InlineKeyboardButton(text="✏️ Изменить", callback_data=f"edit_g_prompt:{g_id}:{target_month}:{idx}"),
             InlineKeyboardButton(text=f"🗑 Удалить", callback_data=f"del_g:{g_id}:{target_month}")
         ])
 
@@ -111,14 +142,14 @@ async def render_goals_view(user_id: int, target_month: Optional[str] = None):
 @router.message(F.text.in_({"🎯 Цели на месяц", "Цели на месяц"}))
 async def cmd_goals(message: Message):
     text, reply_markup = await render_goals_view(message.from_user.id)
-    await message.answer(text, reply_markup=reply_markup, parse_mode="Markdown")
+    await safe_answer_markdown(message, text, reply_markup=reply_markup)
 
 
 @router.callback_query(F.data.startswith("g_month:"))
 async def process_goals_month(callback: CallbackQuery):
     target_month = callback.data.split(":", 1)[1]
     text, reply_markup = await render_goals_view(callback.from_user.id, target_month)
-    await callback.message.edit_text(text, reply_markup=reply_markup, parse_mode="Markdown")
+    await safe_edit_markdown(callback.message, text, reply_markup=reply_markup)
 
 
 @router.callback_query(F.data.startswith("toggle_g:"))
@@ -135,7 +166,7 @@ async def process_toggle_goal(callback: CallbackQuery):
         await callback.answer("Цель не найдена.")
 
     text, reply_markup = await render_goals_view(callback.from_user.id, target_month)
-    await callback.message.edit_text(text, reply_markup=reply_markup, parse_mode="Markdown")
+    await safe_edit_markdown(callback.message, text, reply_markup=reply_markup)
 
 
 @router.callback_query(F.data.startswith("del_g:"))
@@ -148,7 +179,7 @@ async def process_delete_goal(callback: CallbackQuery):
     await callback.answer("Цель удалена.")
 
     text, reply_markup = await render_goals_view(callback.from_user.id, target_month)
-    await callback.message.edit_text(text, reply_markup=reply_markup, parse_mode="Markdown")
+    await safe_edit_markdown(callback.message, text, reply_markup=reply_markup)
 
 
 @router.callback_query(F.data.startswith("add_g_prompt:"))
@@ -161,12 +192,12 @@ async def process_add_goal_prompt(callback: CallbackQuery, state: FSMContext):
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="❌ Отмена", callback_data=f"cancel_g_add:{target_month}")]
     ])
-    await callback.message.answer(
+    await safe_answer_markdown(
+        callback.message,
         f"🎯 **Добавление цели на {month_name}:**\n\n"
         f"Напишите текст вашей цели одним сообщением.\n"
         f"Для отмены нажмите кнопку ниже или отправьте /cancel.",
-        reply_markup=keyboard,
-        parse_mode="Markdown"
+        reply_markup=keyboard
     )
     await callback.answer()
 
@@ -178,9 +209,9 @@ async def process_cancel_g_add_callback(callback: CallbackQuery, state: FSMConte
     await callback.answer("Добавление цели отменено.")
     text, reply_markup = await render_goals_view(callback.from_user.id, target_month)
     try:
-        await callback.message.edit_text(text, reply_markup=reply_markup, parse_mode="Markdown")
+        await safe_edit_markdown(callback.message, text, reply_markup=reply_markup)
     except Exception:
-        await callback.message.answer(text, reply_markup=reply_markup, parse_mode="Markdown")
+        await safe_answer_markdown(callback.message, text, reply_markup=reply_markup)
 
 
 @router.message(Command("cancel"), GoalAddForm.waiting_for_text)
@@ -190,7 +221,7 @@ async def process_cancel_add_goal(message: Message, state: FSMContext):
     target_month = data.get("target_month") or get_today().strftime("%Y-%m")
     await state.clear()
     text, reply_markup = await render_goals_view(message.from_user.id, target_month)
-    await message.answer("❌ Добавление цели отменено.", reply_markup=reply_markup, parse_mode="Markdown")
+    await safe_answer_markdown(message, "❌ Добавление цели отменено.", reply_markup=reply_markup)
 
 
 @router.message(GoalAddForm.waiting_for_text)
@@ -212,4 +243,88 @@ async def process_save_goal_text(message: Message, state: FSMContext):
         await message.answer(f"🎯 **Цель добавлена!**\n_«{goal_text}»_")
 
     text, reply_markup = await render_goals_view(message.from_user.id, target_month)
-    await message.answer(text, reply_markup=reply_markup, parse_mode="Markdown")
+    await safe_answer_markdown(message, text, reply_markup=reply_markup)
+
+
+@router.callback_query(F.data.startswith("edit_g_prompt:"))
+async def process_edit_goal_prompt(callback: CallbackQuery, state: FSMContext):
+    parts = callback.data.split(":")
+    g_id = int(parts[1])
+    target_month = parts[2]
+    idx = int(parts[3]) if len(parts) > 3 else 1
+
+    goal = await goals_service.get_goal_by_id(g_id, callback.from_user.id)
+    if not goal:
+        await callback.answer("⚠️ Цель не найдена или была удалена.", show_alert=True)
+        text, reply_markup = await render_goals_view(callback.from_user.id, target_month)
+        await safe_edit_markdown(callback.message, text, reply_markup=reply_markup)
+        return
+
+    await state.set_state(GoalEditForm.waiting_for_new_text)
+    await state.update_data(goal_id=g_id, target_month=target_month, idx=idx)
+
+    copyable_text = format_copyable_text(goal["goal_text"])
+    text = (
+        f"✏️ **Редактирование цели #{idx}:**\n\n"
+        f"Текущий текст _(нажмите, чтобы скопировать)_:\n{copyable_text}\n\n"
+        f"Отправьте новый текст цели сообщением в чат.\n\n"
+        f"_(нажмите кнопку ниже или отправьте /cancel для отмены)_"
+    )
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="❌ Отмена", callback_data=f"cancel_g_edit:{target_month}")]
+    ])
+    await safe_edit_markdown(callback.message, text, reply_markup=keyboard)
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("cancel_g_edit:"))
+async def process_cancel_g_edit_callback(callback: CallbackQuery, state: FSMContext):
+    target_month = callback.data.split(":", 1)[1]
+    await state.clear()
+    await callback.answer("Редактирование цели отменено.")
+    text, reply_markup = await render_goals_view(callback.from_user.id, target_month)
+    try:
+        await safe_edit_markdown(callback.message, text, reply_markup=reply_markup)
+    except Exception:
+        await safe_answer_markdown(callback.message, text, reply_markup=reply_markup)
+
+
+@router.message(Command("cancel"), GoalEditForm.waiting_for_new_text)
+@router.message(F.text.in_({"cancel", "/cancel", "отмена", "Отмена", "❌ Отмена", "🔙 Отмена"}), GoalEditForm.waiting_for_new_text)
+async def process_cancel_edit_goal(message: Message, state: FSMContext):
+    data = await state.get_data()
+    target_month = data.get("target_month") or get_today().strftime("%Y-%m")
+    await state.clear()
+    text, reply_markup = await render_goals_view(message.from_user.id, target_month)
+    await safe_answer_markdown(message, "❌ Редактирование цели отменено.", reply_markup=reply_markup)
+
+
+@router.message(GoalEditForm.waiting_for_new_text)
+async def process_save_edited_goal_text(message: Message, state: FSMContext):
+    data = await state.get_data()
+    goal_id = data.get("goal_id")
+    target_month = data.get("target_month") or get_today().strftime("%Y-%m")
+    idx = data.get("idx", 1)
+    new_text = message.text.strip() if message.text else ""
+
+    if new_text.lower() in ["/cancel", "cancel", "отмена", "❌ отмена", "🔙 отмена"]:
+        await state.clear()
+        text, reply_markup = await render_goals_view(message.from_user.id, target_month)
+        await safe_answer_markdown(message, "❌ Редактирование цели отменено.", reply_markup=reply_markup)
+        return
+
+    if not goal_id or not new_text:
+        await message.answer("⚠️ Текст цели не может быть пустым. Введите новый текст цели (или /cancel).")
+        return
+
+    success = await goals_service.update_goal(goal_id, message.from_user.id, new_text)
+    await state.clear()
+
+    if success:
+        await safe_answer_markdown(message, f"🎯 **Цель #{idx} обновлена!**\n_«{new_text}»_")
+    else:
+        await message.answer("⚠️ Не удалось обновить цель. Возможно, она была удалена.")
+
+    text, reply_markup = await render_goals_view(message.from_user.id, target_month)
+    await safe_answer_markdown(message, text, reply_markup=reply_markup)
+

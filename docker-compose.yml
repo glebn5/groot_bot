@@ -12,6 +12,7 @@ services:
     volumes:
       - ./data:/app/data
       - ./credentials:/app/credentials
+      - ./.env:/app/.env
     logging:
       driver: "json-file"
       options:

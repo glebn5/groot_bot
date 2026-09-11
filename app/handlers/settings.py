@@ -67,8 +67,14 @@ class SettingsForm(StatesGroup):
 
 def update_env_file(key: str, value: str, env_path: str = ".env"):
     """
-    Updates or adds key=value pair in .env file.
+    Updates or adds key=value pair in .env file and persists to SQLite database.
     """
+    try:
+        from app.services.settings_storage import save_setting_to_db
+        save_setting_to_db(key, str(value))
+    except Exception as e:
+        logger.error(f"Error saving {key} to settings DB: {e}")
+
     lines = []
     if os.path.exists(env_path):
         with open(env_path, "r", encoding="utf-8") as f:

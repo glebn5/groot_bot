@@ -42,6 +42,8 @@ from app.handlers import common, text, voice, media, settings as settings_handle
 
 async def main():
     init_timezone()
+    from app.services.settings_storage import load_settings_from_db
+    load_settings_from_db()
     logger.info("Initializing Groot's Telegram Bot...")
 
     bot = Bot(
