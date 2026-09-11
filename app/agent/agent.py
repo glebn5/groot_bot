@@ -5,7 +5,7 @@ from typing import Optional, List, Dict, Any
 
 from app.config import settings
 from app.agent.schemas import ToolExecutionContext, ToolResult, AgentResponse
-from app.agent.prompts import GROOT_SYSTEM_PROMPT
+from app.agent.prompts import GROOT_SYSTEM_PROMPT, GROOT_CORE_PROMPT, GROOT_RUNTIME_CONTEXT_TEMPLATE
 from app.agent.registry import ToolRegistry, default_registry
 from app.agent.providers import LLMProvider, llm_provider, ToolCallRequest
 from app.agent.ai_manager import ai_request_manager
@@ -87,9 +87,9 @@ class GrootAgent:
                 context_service.add_message(user_id, "assistant", reply)
                 return AgentResponse(reply_text=reply)
 
-        # 2. Build system prompt and context
+        # 2. Build system prompt and context (Optimized for Prefix Prompt Caching)
         context_summary = context_service.get_context_summary(user_id)
-        system_prompt = GROOT_SYSTEM_PROMPT.format(
+        dynamic_context = GROOT_RUNTIME_CONTEXT_TEMPLATE.format(
             current_datetime=now.strftime("%Y-%m-%d %H:%M:%S"),
             day_of_week=day_str,
             timezone=settings.TIMEZONE,
@@ -99,10 +99,13 @@ class GrootAgent:
         # 3. Retrieve conversation history
         history = context_service.get_messages(user_id, limit=settings.AGENT_HISTORY_LIMIT * 2)
 
-        # Prepare messages array for LLM
+        # Prepare messages array for LLM:
+        # Static invariant core prompt is messages[0] to guarantee KV-cache prefix hits!
         active_messages: List[Dict[str, Any]] = [
-            {"role": "system", "content": system_prompt}
+            {"role": "system", "content": GROOT_CORE_PROMPT}
         ]
+        if dynamic_context.strip():
+            active_messages.append({"role": "system", "content": dynamic_context})
         for h in history:
             m_dict = {
                 "role": h.get("role", "user"),

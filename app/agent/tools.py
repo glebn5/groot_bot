@@ -880,6 +880,30 @@ async def delete_goal(context: ToolExecutionContext, goal_id: int) -> ToolResult
         return ToolResult(success=False, error_code="db_error", message=str(e))
 
 
+async def update_goal(context: ToolExecutionContext, goal_id: int, new_text: str) -> ToolResult:
+    """
+    Updates the text of an existing monthly goal by its ID.
+    """
+    if not new_text or not new_text.strip():
+        return ToolResult(success=False, error_code="invalid_argument", message="Текст цели не может быть пустым.")
+
+    clean_text = new_text.strip()
+    try:
+        ok = await goals_service.update_goal(goal_id, context.user_id, clean_text)
+        if ok:
+            return ToolResult(
+                success=True,
+                entity_type="goal",
+                entity_id=goal_id,
+                data={"id": goal_id, "text": clean_text},
+                message=f"Цель #{goal_id} обновлена: «{clean_text}»."
+            )
+        return ToolResult(success=False, error_code="not_found", message=f"Цель #{goal_id} не найдена.")
+    except Exception as e:
+        logger.error(f"Error in update_goal: {e}", exc_info=True)
+        return ToolResult(success=False, error_code="db_error", message=str(e))
+
+
 # ---------------------------------------------------------------------------
 # 6. RECURRING & HABITS TOOLS
 # ---------------------------------------------------------------------------

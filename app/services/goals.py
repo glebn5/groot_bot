@@ -127,6 +127,23 @@ class GoalsService:
             logger.error(f"Error deleting goal {goal_id} for user {user_id}: {e}", exc_info=True)
             return False
 
+    async def update_goal(self, goal_id: int, user_id: int, new_text: str) -> bool:
+        """
+        Updates the text of a goal owned by user_id.
+        """
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "UPDATE monthly_goals SET goal_text = ? WHERE id = ? AND user_id = ?",
+                    (new_text.strip(), goal_id, user_id)
+                )
+                conn.commit()
+                return cursor.rowcount > 0
+        except Exception as e:
+            logger.error(f"Error updating goal {goal_id} for user {user_id}: {e}", exc_info=True)
+            return False
+
     async def get_goal_settings(self, user_id: int) -> Dict[str, Any]:
         """
         Retrieves user goal reminder settings or creates default settings if not exists.

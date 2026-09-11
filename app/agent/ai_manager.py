@@ -4,7 +4,8 @@ import re
 import time
 from datetime import datetime, timedelta
 from typing import Dict, Any, List, Optional, Tuple
-from groq import AsyncGroq, RateLimitError, APIError
+from groq import AsyncGroq, RateLimitError as GroqRateLimitError, APIError as GroqAPIError
+from openai import AsyncOpenAI, RateLimitError as OpenAIRateLimitError, APIError as OpenAIAPIError
 import google.generativeai as genai
 
 from app.config import settings
@@ -16,27 +17,28 @@ class AIRequestManager:
     """
     Centralized manager for all AI LLM requests.
     Features:
+    - Primary integration with ProxyAPI (OpenAI-compatible gateway, Qwen 3.8 Flash, native tool calling, prompt caching)
+    - Automated logging of KV-cache (Prompt Caching) hit-rates and token savings
+    - Secondary/fallback to Groq (Llama / GPT-OSS) and Google Gemini
     - Model availability and capability routing (tool-calling vs text-only)
-    - Elimination of nonexistent models (prevents 404s)
     - Rate limit parsing (TPD, TPM, RPM, OTPM) and automatic model cooldown
-    - Zero-internal-retry Groq client with controlled application-level fallback
+    - Zero-internal-retry clients with fast application-level fallback
     - Per-user request serialization (prevents competing requests from same user)
     - Concurrency throttle for external API protection
-    - Seamless fallback to Gemini when Groq is exhausted
     """
 
-    TOOL_MODELS = [
+    # Groq fallback tool models
+    GROQ_TOOL_MODELS = [
         "openai/gpt-oss-120b",
         "openai/gpt-oss-20b",
-        "qwen/qwen3.8-27b",
-        "qwen/qwen3.6-27b"
+        "llama-3.1-8b-instant"
     ]
 
-    TEXT_MODELS = [
+    # Groq fallback text models
+    GROQ_TEXT_MODELS = [
         "openai/gpt-oss-120b",
         "openai/gpt-oss-20b",
-        "qwen/qwen3.8-27b",
-        "qwen/qwen3.6-27b",
+        "llama-3.1-8b-instant",
         "groq/compound",
         "groq/compound-mini"
     ]
@@ -48,12 +50,27 @@ class AIRequestManager:
     ]
 
     def __init__(self):
-        # max_retries=0 ensures the SDK does not stall inside with 20-35s sleeps
         self.groq_client = AsyncGroq(api_key=settings.GROQ_API_KEY, max_retries=0)
+        self.proxyapi_client: Optional[AsyncOpenAI] = None
         self._model_cooldowns: Dict[str, float] = {}  # model_name -> timestamp until which on cooldown
         self._user_locks: Dict[int, asyncio.Lock] = {}
         self._global_semaphore = asyncio.Semaphore(3)  # Max 3 concurrent LLM calls
+        self._init_proxyapi()
         self._init_gemini()
+
+    def _init_proxyapi(self):
+        key = (getattr(settings, "PROXYAPI_KEY", "") or "").strip()
+        if key and key != "your_proxyapi_key_here" and not key.startswith("your_"):
+            try:
+                base_url = getattr(settings, "PROXYAPI_BASE_URL", "https://api.proxyapi.ru/openai/v1")
+                self.proxyapi_client = AsyncOpenAI(
+                    api_key=key,
+                    base_url=base_url,
+                    max_retries=0
+                )
+                logger.info(f"[AIRequestManager] ProxyAPI client initialized for base_url={base_url}")
+            except Exception as e:
+                logger.warning(f"Failed to initialize ProxyAPI client: {e}")
 
     def _init_gemini(self):
         key = (settings.GEMINI_API_KEY or "").strip()
@@ -62,6 +79,10 @@ class AIRequestManager:
                 genai.configure(api_key=key)
             except Exception as e:
                 logger.warning(f"Failed to configure Gemini API: {e}")
+
+    def is_proxyapi_available(self) -> bool:
+        key = (getattr(settings, "PROXYAPI_KEY", "") or "").strip()
+        return self.proxyapi_client is not None and bool(key and not key.startswith("your_"))
 
     def is_gemini_available(self) -> bool:
         key = (settings.GEMINI_API_KEY or "").strip()
@@ -99,30 +120,53 @@ class AIRequestManager:
         Examples:
           'Please try again in 11m2.688s' -> 663s
           'Please try again in 4.5s' -> 5s
-          'Retry-After' header -> seconds
         """
         err_str = str(error)
-        
-        # Check 'Please try again in ...' pattern
         match = re.search(r"try again in (?:(\d+)m)?(?:([\d\.]+)s)?", err_str, re.IGNORECASE)
         if match:
             minutes = float(match.group(1) or 0)
             seconds = float(match.group(2) or 0)
-            total = minutes * 60 + seconds
-            if total > 0:
-                return total + 2  # Buffer 2 seconds
+            cooldown = minutes * 60 + seconds + 2.0
+            return max(cooldown, 5.0)
 
-        # Check for explicit numbers of seconds
-        sec_match = re.search(r"retry after (\d+) seconds", err_str, re.IGNORECASE)
-        if sec_match:
-            return float(sec_match.group(1)) + 2
+        match_sec = re.search(r"in ([\d\.]+)s", err_str, re.IGNORECASE)
+        if match_sec:
+            return float(match_sec.group(1)) + 2.0
 
-        # If it's a TPD (Tokens Per Day) limit, default to at least 10 minutes
-        if "tokens per day" in err_str.lower() or "tpd" in err_str.lower():
+        if "tpd" in err_str.lower() or "tokens per day" in err_str.lower():
             return 600.0
 
-        # Default short cooldown for generic 429
         return 30.0
+
+    def _log_cache_metrics(self, response: Any, provider_name: str = "ProxyAPI"):
+        """
+        Extracts and logs prompt caching metrics from API response usage.
+        """
+        try:
+            usage = getattr(response, "usage", None)
+            if not usage:
+                return
+            prompt_tokens = getattr(usage, "prompt_tokens", 0) or 0
+            completion_tokens = getattr(usage, "completion_tokens", 0) or 0
+            cached_tokens = 0
+
+            # Check prompt_tokens_details (OpenAI/ProxyAPI format)
+            details = getattr(usage, "prompt_tokens_details", None)
+            if details:
+                if isinstance(details, dict):
+                    cached_tokens = details.get("cached_tokens", 0) or 0
+                else:
+                    cached_tokens = getattr(details, "cached_tokens", 0) or 0
+
+            if prompt_tokens > 0:
+                hit_rate = (cached_tokens / prompt_tokens) * 100
+                logger.info(
+                    f"[{provider_name} Cache] Prompt: {prompt_tokens} tokens "
+                    f"(Cached: {cached_tokens}, Hit-rate: {hit_rate:.1f}%), "
+                    f"Completion: {completion_tokens} tokens."
+                )
+        except Exception as e:
+            logger.debug(f"Failed to log cache metrics: {e}")
 
     async def execute_tool_turn(
         self,
@@ -132,17 +176,49 @@ class AIRequestManager:
         max_tokens: int = 1536
     ) -> Any:
         """
-        Executes a turn with tool calling support using prioritized tool models.
-        Skips models currently on cooldown.
-        Falls back to Gemini if all Groq tool models fail or are on cooldown.
+        Executes a turn with tool calling support.
+        Priority 1: ProxyAPI (e.g. qwen/qwen3.8-flash)
+        Priority 2: Groq tool models (Llama 3.1 / GPT-OSS)
+        Priority 3: Gemini fallback
         """
         last_error = None
 
         async with self._global_semaphore:
-            for model in self.TOOL_MODELS:
+            # 1. Try ProxyAPI if configured
+            if self.is_proxyapi_available() and self.proxyapi_client is not None:
+                p_model = getattr(settings, "PROXYAPI_MODEL", "qwen/qwen3.8-flash")
+                cooling, rem = self.is_model_on_cooldown(p_model)
+                if not cooling:
+                    try:
+                        logger.info(f"[AIRequestManager] Trying ProxyAPI model '{p_model}' with {len(tools or [])} tools...")
+                        kwargs: Dict[str, Any] = {
+                            "model": p_model,
+                            "messages": messages,
+                            "temperature": temperature,
+                            "max_tokens": max_tokens
+                        }
+                        if tools:
+                            kwargs["tools"] = tools
+                            kwargs["tool_choice"] = "auto"
+
+                        response = await self.proxyapi_client.chat.completions.create(**kwargs)
+                        self._log_cache_metrics(response, provider_name="ProxyAPI")
+                        return response, f"proxyapi/{p_model}"
+                    except (OpenAIRateLimitError, GroqRateLimitError) as rle:
+                        cooldown = self.parse_rate_limit_cooldown(rle)
+                        self.set_model_cooldown(p_model, cooldown, reason=f"ProxyAPI 429: {rle}")
+                        last_error = rle
+                    except Exception as pe:
+                        logger.warning(f"[AIRequestManager] ProxyAPI call failed ({pe}). Falling back to secondary providers...")
+                        last_error = pe
+                else:
+                    logger.info(f"[AIRequestManager] Skipping ProxyAPI model '{p_model}' (cooling down for {rem:.0f}s).")
+
+            # 2. Fallback to Groq Tool Models
+            for model in self.GROQ_TOOL_MODELS:
                 cooling, rem = self.is_model_on_cooldown(model)
                 if cooling:
-                    logger.info(f"[AIRequestManager] Skipping '{model}' (cooling down for {rem:.0f}s).")
+                    logger.info(f"[AIRequestManager] Skipping Groq '{model}' (cooling down for {rem:.0f}s).")
                     continue
 
                 try:
@@ -159,12 +235,11 @@ class AIRequestManager:
 
                     response = await self.groq_client.chat.completions.create(**kwargs)
                     return response, model
-                except RateLimitError as rle:
+                except (GroqRateLimitError, OpenAIRateLimitError) as rle:
                     cooldown = self.parse_rate_limit_cooldown(rle)
                     self.set_model_cooldown(model, cooldown, reason=f"429 RateLimit: {rle}")
                     last_error = rle
-                except APIError as apie:
-                    # If model returned 400 (e.g. tool calling unsupported) or 404
+                except (GroqAPIError, OpenAIAPIError) as apie:
                     if apie.status_code == 400 and "tool calling" in str(apie).lower():
                         logger.error(f"[AIRequestManager] Model '{model}' does not support tool calling: {apie}")
                         self.set_model_cooldown(model, 3600, reason="Tool calling unsupported")
@@ -178,9 +253,9 @@ class AIRequestManager:
                     logger.warning(f"[AIRequestManager] Groq model '{model}' failed: {e}")
                     last_error = e
 
-        # If all Groq models failed, check Gemini
+        # 3. Fallback to Gemini
         if self.is_gemini_available():
-            logger.info("[AIRequestManager] All Groq tool models failed or on cooldown. Falling back to Gemini...")
+            logger.info("[AIRequestManager] All primary tool models failed or on cooldown. Falling back to Gemini...")
             try:
                 gemini_resp = await self._execute_gemini_prompt(messages)
                 return gemini_resp, "gemini-fallback"
@@ -201,13 +276,39 @@ class AIRequestManager:
     ) -> Tuple[str, str]:
         """
         Executes a pure text/json completion without tool calling.
-        Can utilize broader TEXT_MODELS (including compound models).
-        Returns (content, model_used).
+        Priority 1: ProxyAPI
+        Priority 2: Groq text models
+        Priority 3: Gemini fallback
         """
         last_error = None
 
         async with self._global_semaphore:
-            for model in self.TEXT_MODELS:
+            # 1. Try ProxyAPI
+            if self.is_proxyapi_available() and self.proxyapi_client is not None:
+                p_model = getattr(settings, "PROXYAPI_MODEL", "qwen/qwen3.8-flash")
+                cooling, rem = self.is_model_on_cooldown(p_model)
+                if not cooling:
+                    try:
+                        logger.info(f"[AIRequestManager] Trying ProxyAPI text model '{p_model}'...")
+                        kwargs: Dict[str, Any] = {
+                            "model": p_model,
+                            "messages": messages,
+                            "temperature": temperature,
+                            "max_tokens": max_tokens
+                        }
+                        if response_format:
+                            kwargs["response_format"] = response_format
+
+                        response = await self.proxyapi_client.chat.completions.create(**kwargs)
+                        self._log_cache_metrics(response, provider_name="ProxyAPI")
+                        content = response.choices[0].message.content or ""
+                        return content, f"proxyapi/{p_model}"
+                    except Exception as pe:
+                        logger.warning(f"[AIRequestManager] ProxyAPI text completion failed ({pe}). Falling back...")
+                        last_error = pe
+
+            # 2. Try Groq text models
+            for model in self.GROQ_TEXT_MODELS:
                 cooling, rem = self.is_model_on_cooldown(model)
                 if cooling:
                     logger.info(f"[AIRequestManager] Skipping text model '{model}' (cooling down for {rem:.0f}s).")
@@ -227,11 +328,11 @@ class AIRequestManager:
                     response = await self.groq_client.chat.completions.create(**kwargs)
                     content = response.choices[0].message.content or ""
                     return content, model
-                except RateLimitError as rle:
+                except (GroqRateLimitError, OpenAIRateLimitError) as rle:
                     cooldown = self.parse_rate_limit_cooldown(rle)
                     self.set_model_cooldown(model, cooldown, reason=f"429 RateLimit: {rle}")
                     last_error = rle
-                except APIError as apie:
+                except (GroqAPIError, OpenAIAPIError) as apie:
                     if apie.status_code == 404:
                         logger.error(f"[AIRequestManager] Text model '{model}' not found (404). Disabling for 24h.")
                         self.set_model_cooldown(model, 86400, reason="Model not found (404)")
@@ -242,9 +343,9 @@ class AIRequestManager:
                     logger.warning(f"[AIRequestManager] Groq text model '{model}' failed: {e}")
                     last_error = e
 
-        # Fallback to Gemini
+        # 3. Fallback to Gemini
         if self.is_gemini_available():
-            logger.info("[AIRequestManager] All Groq text models failed. Falling back to Gemini...")
+            logger.info("[AIRequestManager] All text models failed. Falling back to Gemini...")
             for gm in self.GEMINI_MODELS:
                 try:
                     prompt = "\n\n".join([f"{m.get('role', 'user')}: {m.get('content', '')}" for m in messages])

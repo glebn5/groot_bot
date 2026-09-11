@@ -9,7 +9,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from app.config import settings
-from app.utils.timezone import get_now, get_tz
+from app.utils.timezone import get_now, get_tz, get_today
 
 logger = logging.getLogger(__name__)
 

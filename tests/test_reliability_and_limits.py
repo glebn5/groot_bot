@@ -16,17 +16,17 @@ class TestReliabilityAndLimits(unittest.TestCase):
 
     def test_model_lists_validity(self):
         # 1. Non-existent llama-3.3-70b-versatile must NOT be in any list
-        self.assertNotIn("llama-3.3-70b-versatile", self.ai_manager.TOOL_MODELS)
-        self.assertNotIn("llama-3.3-70b-versatile", self.ai_manager.TEXT_MODELS)
+        self.assertNotIn("llama-3.3-70b-versatile", self.ai_manager.GROQ_TOOL_MODELS)
+        self.assertNotIn("llama-3.3-70b-versatile", self.ai_manager.GROQ_TEXT_MODELS)
 
-        # 2. groq/compound must NOT be in TOOL_MODELS because it rejects tool calling
-        self.assertNotIn("groq/compound", self.ai_manager.TOOL_MODELS)
-        self.assertNotIn("groq/compound-mini", self.ai_manager.TOOL_MODELS)
+        # 2. groq/compound must NOT be in GROQ_TOOL_MODELS because it rejects tool calling
+        self.assertNotIn("groq/compound", self.ai_manager.GROQ_TOOL_MODELS)
+        self.assertNotIn("groq/compound-mini", self.ai_manager.GROQ_TOOL_MODELS)
 
-        # 3. Valid tool calling models must be present
-        self.assertIn("openai/gpt-oss-120b", self.ai_manager.TOOL_MODELS)
-        self.assertIn("openai/gpt-oss-20b", self.ai_manager.TOOL_MODELS)
-        self.assertIn("qwen/qwen3.8-27b", self.ai_manager.TOOL_MODELS)
+        # 3. Valid tool calling models must be present (including llama-3.1-8b-instant)
+        self.assertIn("openai/gpt-oss-120b", self.ai_manager.GROQ_TOOL_MODELS)
+        self.assertIn("openai/gpt-oss-20b", self.ai_manager.GROQ_TOOL_MODELS)
+        self.assertIn("llama-3.1-8b-instant", self.ai_manager.GROQ_TOOL_MODELS)
 
     def test_rate_limit_parsing(self):
         # Case A: minutes and seconds
@@ -82,6 +82,61 @@ class TestReliabilityAndLimits(unittest.TestCase):
 
         asyncio.run(run_async())
 
+    def test_prompt_caching_structure(self):
+        from app.agent.prompts import GROOT_CORE_PROMPT, GROOT_RUNTIME_CONTEXT_TEMPLATE
+        # Core prompt must NOT contain dynamic timestamps or formatting variables
+        self.assertNotIn("{current_datetime}", GROOT_CORE_PROMPT)
+        self.assertNotIn("{timezone}", GROOT_CORE_PROMPT)
+        self.assertNotIn("{context_summary}", GROOT_CORE_PROMPT)
+
+        # Dynamic context template must contain them
+        self.assertIn("{current_datetime}", GROOT_RUNTIME_CONTEXT_TEMPLATE)
+        self.assertIn("{timezone}", GROOT_RUNTIME_CONTEXT_TEMPLATE)
+
+    def test_update_goal_execution(self):
+        from app.services.goals import goals_service
+        from app.agent.tools import update_goal
+
+        async def run_async():
+            # Add a test goal
+            user_id = 999888777
+            gid = await goals_service.add_goal(user_id, "3000 подтягиваний", "2026-09")
+            self.assertGreater(gid, 0)
+
+            # Update via tool
+            ctx = ToolExecutionContext(user_id=user_id, chat_id=user_id, message_id=1)
+            res = await update_goal(ctx, gid, "172 из 3000 подтягиваний")
+            self.assertTrue(res.success)
+            self.assertIn("172 из 3000 подтягиваний", res.message)
+
+            # Verify in DB
+            goals = await goals_service.get_goals(user_id, "2026-09")
+            updated = next((g for g in goals if g["id"] == gid), None)
+            self.assertIsNotNone(updated)
+            self.assertEqual(updated["goal_text"], "172 из 3000 подтягиваний")
+
+            # Clean up
+            await goals_service.delete_goal(gid, user_id)
+
+        asyncio.run(run_async())
+
+    def test_cache_metrics_logging(self):
+        # Mock response with usage and cached_tokens
+        mock_resp = MagicMock()
+        mock_resp.usage.prompt_tokens = 6000
+        mock_resp.usage.completion_tokens = 120
+        mock_resp.usage.prompt_tokens_details.cached_tokens = 5400
+
+        with patch("app.agent.ai_manager.logger.info") as mock_log:
+            self.ai_manager._log_cache_metrics(mock_resp, provider_name="ProxyAPI")
+            mock_log.assert_called_once()
+            log_msg = mock_log.call_args[0][0]
+            self.assertIn("[ProxyAPI Cache]", log_msg)
+            self.assertIn("6000 tokens", log_msg)
+            self.assertIn("Cached: 5400", log_msg)
+            self.assertIn("Hit-rate: 90.0%", log_msg)
+
 
 if __name__ == "__main__":
     unittest.main()
+

@@ -500,6 +500,20 @@ def build_default_registry() -> ToolRegistry:
         handler=t.delete_goal
     )
 
+    registry.register(
+        name="update_goal",
+        description="Обновляет текст цели на месяц по ID (например, изменить прогресс или формулировку цели).",
+        parameters={
+            "type": "object",
+            "properties": {
+                "goal_id": {"type": "integer", "description": "ID цели для обновления"},
+                "new_text": {"type": "string", "description": "Новый текст цели"}
+            },
+            "required": ["goal_id", "new_text"]
+        },
+        handler=t.update_goal
+    )
+
     # 6. Recurring / Habits
     registry.register(
         name="create_recurring_task",

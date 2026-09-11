@@ -10,6 +10,9 @@ class Settings(BaseSettings):
     
     GROQ_API_KEY: str
     GEMINI_API_KEY: str = ""
+    PROXYAPI_KEY: str = ""
+    PROXYAPI_BASE_URL: str = "https://api.proxyapi.ru/openai/v1"
+    PROXYAPI_MODEL: str = "qwen/qwen3.8-flash"
     
     WEBDAV_HOSTNAME: str = "https://webdav.cloud.mail.ru"
     WEBDAV_LOGIN: str
