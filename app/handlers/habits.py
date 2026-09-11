@@ -371,9 +371,11 @@ async def process_rec_title(message: Message, state: FSMContext):
         [InlineKeyboardButton(text="📅 Каждый день (daily)", callback_data="rec_type:daily")],
         [InlineKeyboardButton(text="📆 По дням недели (weekly)", callback_data="rec_type:weekly")],
         [InlineKeyboardButton(text="⏱ С интервалом в N дней", callback_data="rec_type:interval_days")],
+        [InlineKeyboardButton(text="🕒 Каждый час / каждые N часов", callback_data="rec_type:interval_hours")],
         [InlineKeyboardButton(text="❌ Отмена", callback_data="show_habits")]
     ])
     await safe_send_markdown(message, f"📌 Привычка: **«{title}»**\n\nВыберите тип повторения:", reply_markup=keyboard)
+
 
 
 def render_weekly_days_keyboard(selected_days: Set[str]) -> InlineKeyboardMarkup:
@@ -444,8 +446,24 @@ async def process_rec_type(callback: CallbackQuery, state: FSMContext):
             [InlineKeyboardButton(text="❌ Отмена", callback_data="show_habits")]
         ])
         await safe_edit_markdown(callback.message, "⏱ **Выберите интервал в днях:**", reply_markup=keyboard)
+    elif r_type == "interval_hours":
+        await state.set_state(HabitAddForm.days_or_interval)
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(text="Каждый 1 час", callback_data="rec_interval_h:1"),
+                InlineKeyboardButton(text="Каждые 2 часа", callback_data="rec_interval_h:2"),
+                InlineKeyboardButton(text="Каждые 3 часа", callback_data="rec_interval_h:3")
+            ],
+            [
+                InlineKeyboardButton(text="Каждые 4 часа", callback_data="rec_interval_h:4"),
+                InlineKeyboardButton(text="Каждые 6 часов", callback_data="rec_interval_h:6")
+            ],
+            [InlineKeyboardButton(text="❌ Отмена", callback_data="show_habits")]
+        ])
+        await safe_edit_markdown(callback.message, "⏱ **Выберите интервал в часах:**", reply_markup=keyboard)
 
     await callback.answer()
+
 
 
 @router.callback_query(F.data.startswith("toggle_rec_day:"), HabitAddForm.days_or_interval)
@@ -530,6 +548,34 @@ async def process_rec_interval(callback: CallbackQuery, state: FSMContext):
         reply_markup=cancel_kb
     )
     await callback.answer()
+
+
+@router.callback_query(F.data.startswith("rec_interval_h:"), HabitAddForm.days_or_interval)
+async def process_rec_interval_h(callback: CallbackQuery, state: FSMContext):
+    hours_val = int(callback.data.split(":", 1)[1])
+    data = await state.get_data()
+    title = data.get("title")
+    r_type = "interval_hours"
+    await state.clear()
+
+    task_id = await recurring_service.add_recurring_task(
+        user_id=callback.from_user.id,
+        title=title,
+        repeat_type=r_type,
+        interval_days=hours_val,
+        target_time="10:00"
+    )
+
+    if task_id > 0:
+        task = await recurring_service.get_task_by_id(task_id, callback.from_user.id)
+        if task:
+            scheduler_service.schedule_recurring_task_job(task)
+        h_str = "каждый 1 час" if hours_val == 1 else f"каждые {hours_val} ч."
+        await callback.answer(f"Привычка создана ({h_str})!", show_alert=True)
+
+    text, reply_markup = await render_habits_view(callback.from_user.id)
+    await safe_edit_markdown(callback.message, text, reply_markup=reply_markup)
+
 
 
 @router.message(HabitAddForm.days_or_interval)
