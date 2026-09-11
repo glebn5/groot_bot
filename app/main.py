@@ -1,23 +1,43 @@
 import asyncio
 import logging
+import os
 import sys
+from logging.handlers import RotatingFileHandler
 from aiogram import Bot, Dispatcher
 from aiogram.enums import ParseMode
 from aiogram.client.default import DefaultBotProperties
 
 from app.config import settings
+
+# Configure structured logging (Console + Rotating File)
+log_dir = os.path.dirname(settings.LOG_FILE_PATH)
+if log_dir:
+    os.makedirs(log_dir, exist_ok=True)
+
+log_formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+
+console_handler = logging.StreamHandler(sys.stdout)
+console_handler.setFormatter(log_formatter)
+
+file_handler = RotatingFileHandler(
+    settings.LOG_FILE_PATH,
+    maxBytes=settings.LOG_MAX_BYTES,
+    backupCount=settings.LOG_BACKUP_COUNT,
+    encoding="utf-8"
+)
+file_handler.setFormatter(log_formatter)
+
+logging.basicConfig(
+    level=logging.INFO,
+    handlers=[console_handler, file_handler]
+)
+logger = logging.getLogger("app.main")
+
 from app.utils.timezone import init_timezone
 from app.middleware.auth import AuthMiddleware
 from app.services.scheduler import scheduler_service
 from app.handlers import common, text, voice, media, settings as settings_handler, notes as notes_handler, goals as goals_handler, habits as habits_handler
 
-# Configure structured logging
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    handlers=[logging.StreamHandler(sys.stdout)]
-)
-logger = logging.getLogger("app.main")
 
 
 async def main():

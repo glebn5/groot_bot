@@ -3,7 +3,7 @@ import re
 import logging
 from aiogram import Router, F, Bot
 from aiogram.filters import Command
-from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 
@@ -16,6 +16,7 @@ from app.agent import groot_agent
 from app.services.calendar import calendar_service
 from app.services.scheduler import scheduler_service
 from app.services.goals import goals_service
+from app.services.logs import get_log_stats, get_log_tail, clear_log_file
 from app.utils.timezone import get_today
 from app.handlers.text import render_schedule_view
 
@@ -44,6 +45,19 @@ async def safe_send_markdown(message: Message, text: str, reply_markup=None):
         await message.answer(text, reply_markup=reply_markup, parse_mode="Markdown")
     except Exception:
         await message.answer(text, reply_markup=reply_markup)
+
+
+async def safe_edit_markdown(message: Message, text: str, reply_markup=None):
+    try:
+        await message.edit_text(text, reply_markup=reply_markup, parse_mode="Markdown")
+    except Exception:
+        try:
+            await message.edit_text(text, reply_markup=reply_markup)
+        except Exception:
+            try:
+                await message.answer(text, reply_markup=reply_markup, parse_mode="Markdown")
+            except Exception:
+                await message.answer(text, reply_markup=reply_markup)
 
 
 class SettingsForm(StatesGroup):
@@ -120,9 +134,45 @@ def render_settings_main():
         [InlineKeyboardButton(text="📂 Obsidian & Vault (WebDAV)", callback_data="settings_cat:obsidian")],
         [InlineKeyboardButton(text="📅 Google Календарь", callback_data="settings_cat:calendar")],
         [InlineKeyboardButton(text="⏱ Напоминания и Таймеры", callback_data="settings_cat:snooze")],
+        [InlineKeyboardButton(text="📋 Логи системы", callback_data="settings_cat:logs")],
         [InlineKeyboardButton(text="❌ Закрыть", callback_data="close_settings")]
     ])
     return text, keyboard
+
+
+def render_settings_logs(errors_only: bool = False):
+    stats = get_log_stats()
+    tail = get_log_tail(max_lines=20, errors_only=errors_only)
+    
+    title_suffix = " (⚠️ Только ошибки)" if errors_only else ""
+    backups_info = f", архивов: {len(stats['backups'])}" if stats['backups'] else ""
+    
+    text = (
+        f"📋 **Логи системы Groot{title_suffix}**\n\n"
+        f"• **Файл:** `{stats['path']}`\n"
+        f"• **Размер:** `{stats['size_str']}` (макс. {stats['max_mb']:.0f} МБ{backups_info})\n\n"
+        f"📜 **Последние строки:**\n"
+        f"```text\n{tail}\n```"
+    )
+
+    mode_btn = InlineKeyboardButton(
+        text="📋 Все логи" if errors_only else "⚠️ Только ошибки",
+        callback_data="logs:all" if errors_only else "logs:errors"
+    )
+
+    refresh_btn = InlineKeyboardButton(
+        text="🔄 Обновить",
+        callback_data="logs:errors" if errors_only else "logs:refresh"
+    )
+
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📄 Скачать bot.log", callback_data="logs:send_file")],
+        [mode_btn, refresh_btn],
+        [InlineKeyboardButton(text="🧹 Очистить текущий лог", callback_data="logs:clear_confirm")],
+        [InlineKeyboardButton(text="🔙 Назад в настройки", callback_data="settings_cat:main")]
+    ])
+    return text, keyboard
+
 
 
 def render_settings_llm():
@@ -428,6 +478,8 @@ async def process_settings_category(callback: CallbackQuery, state: FSMContext):
         text, keyboard = render_settings_quiet_start()
     elif cat == "quiet_end":
         text, keyboard = render_settings_quiet_end()
+    elif cat == "logs":
+        text, keyboard = render_settings_logs()
     else:
         text, keyboard = render_settings_main()
 
@@ -436,6 +488,84 @@ async def process_settings_category(callback: CallbackQuery, state: FSMContext):
     except Exception:
         await callback.message.answer(text, reply_markup=keyboard, parse_mode="Markdown")
     await callback.answer()
+
+
+@router.message(Command("logs"))
+async def cmd_logs(message: Message):
+    parts = (message.text or "").strip().split(maxsplit=1)
+    if len(parts) > 1 and parts[1].strip().lower() in ("file", "doc", "download", "файл"):
+        stats = get_log_stats()
+        if not stats["exists"] or stats["size_bytes"] == 0:
+            await message.answer("ℹ️ Файл логов пока пуст или еще не создан.")
+            return
+        try:
+            await message.answer_document(
+                FSInputFile(stats["path"], filename="bot.log"),
+                caption=f"📄 **Лог бота** (`{stats['size_str']}`)"
+            )
+            return
+        except Exception as e:
+            logger.error(f"Error sending log document: {e}", exc_info=True)
+            await message.answer(f"⚠️ Не удалось отправить файл логов: {e}")
+            return
+
+    text, keyboard = render_settings_logs()
+    await safe_send_markdown(message, text, reply_markup=keyboard)
+
+
+@router.callback_query(F.data == "logs:send_file")
+async def process_logs_send_file(callback: CallbackQuery):
+    stats = get_log_stats()
+    if not stats["exists"] or stats["size_bytes"] == 0:
+        await callback.answer("Файл логов пока пуст или еще не создан.", show_alert=True)
+        return
+
+    await callback.answer("Отправляю файл логов...")
+    try:
+        await callback.message.answer_document(
+            FSInputFile(stats["path"], filename="bot.log"),
+            caption=f"📄 **Лог бота** (`{stats['size_str']}`)"
+        )
+    except Exception as e:
+        logger.error(f"Error sending log document: {e}", exc_info=True)
+        await callback.message.answer(f"⚠️ Не удалось отправить файл логов: {e}")
+
+
+@router.callback_query(F.data.in_({"logs:refresh", "logs:all"}))
+async def process_logs_refresh(callback: CallbackQuery):
+    text, keyboard = render_settings_logs(errors_only=False)
+    await safe_edit_markdown(callback.message, text, reply_markup=keyboard)
+    await callback.answer("Логи обновлены")
+
+
+@router.callback_query(F.data == "logs:errors")
+async def process_logs_errors(callback: CallbackQuery):
+    text, keyboard = render_settings_logs(errors_only=True)
+    await safe_edit_markdown(callback.message, text, reply_markup=keyboard)
+    await callback.answer("Фильтр: только ошибки")
+
+
+@router.callback_query(F.data == "logs:clear_confirm")
+async def process_logs_clear_confirm(callback: CallbackQuery):
+    text = (
+        "⚠️ **Вы уверены, что хотите очистить текущий лог?**\n\n"
+        "Файл `bot.log` будет очищен. Архивы ротации останутся нетронутыми."
+    )
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⚠️ Да, очистить лог", callback_data="logs:clear_do")],
+        [InlineKeyboardButton(text="❌ Отмена", callback_data="settings_cat:logs")]
+    ])
+    await safe_edit_markdown(callback.message, text, reply_markup=keyboard)
+    await callback.answer()
+
+
+@router.callback_query(F.data == "logs:clear_do")
+async def process_logs_clear_do(callback: CallbackQuery):
+    clear_log_file()
+    await callback.answer("🧹 Лог успешно очищен!", show_alert=True)
+    text, keyboard = render_settings_logs(errors_only=False)
+    await safe_edit_markdown(callback.message, text, reply_markup=keyboard)
+
 
 
 @router.callback_query(F.data.startswith("set_sched_sum:"))

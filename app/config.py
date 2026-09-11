@@ -33,6 +33,10 @@ class Settings(BaseSettings):
     AGENT_HISTORY_LIMIT: int = 10
     AGENT_CONFIRM_DESTRUCTIVE: bool = True
 
+    LOG_FILE_PATH: str = "data/logs/bot.log"
+    LOG_MAX_BYTES: int = 5 * 1024 * 1024  # 5 MB
+    LOG_BACKUP_COUNT: int = 3  # Up to 3 backup files (bot.log.1, bot.log.2, bot.log.3)
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
