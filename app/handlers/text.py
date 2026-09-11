@@ -110,9 +110,13 @@ async def render_schedule_view(chat_id: int, start_date: date, end_date: Optiona
 
     # 1) Get local tasks for date range
     local_tasks = await tasks_service.get_tasks_for_date_range(chat_id, start_date, end_date)
+    task_status_map = {}
     for t in local_tasks:
+        t_clean = str(t['task_text'] or "").strip()
+        task_status_map[t_clean.lower()] = bool(t.get("is_completed"))
+
         status_icon = "✅" if t.get("is_completed") else "▫️"
-        text = str(t['task_text'] or "").strip()
+        text = t_clean
 
         match = re.search(r'\b([0-1]?\d|2[0-3]):([0-5]\d)\b', text)
         if match:
@@ -130,18 +134,20 @@ async def render_schedule_view(chat_id: int, start_date: date, end_date: Optiona
         formatted_item = str(formatted_item or "").replace(f"{r['date']} в ", "")
         time_part = str(r['time'] or "")
         msg_body = re.sub(r'^\d{2}:\d{2}\s*—\s*', '', formatted_item).strip()
-        timed_items.append((time_part, "▫️", msg_body))
+        r_status = "✅" if task_status_map.get(msg_body.lower()) else "▫️"
+        timed_items.append((time_part, r_status, msg_body))
 
     # 3) Get Google Calendar events for date range
     events = await calendar_service.get_events_for_date_range(start_date, end_date)
     for ev in events:
-        summary = str(ev.get('summary') or 'Без названия')
+        summary = str(ev.get('summary') or 'Без названия').strip()
         start_dt = str(ev.get('start', {}).get('dateTime', '') or '')
+        ev_status = "✅" if task_status_map.get(summary.lower()) else "▫️"
         if len(start_dt) >= 16:
             time_part = start_dt[11:16]
-            timed_items.append((time_part, "▫️", summary))
+            timed_items.append((time_part, ev_status, summary))
         else:
-            untimed_items.append(("▫️", summary))
+            untimed_items.append((ev_status, summary))
 
     # 4) Get Obsidian tasks
     obs_tasks = await obsidian_service.get_daily_tasks(start_date)
@@ -160,25 +166,39 @@ async def render_schedule_view(chat_id: int, start_date: date, end_date: Optiona
     # Sort timed items chronologically by time (HH:MM)
     timed_items.sort(key=lambda x: x[0])
 
-    # Deduplicate items
+    # Deduplicate timed items and inherit status
     dedup_timed = []
     seen_timed = set()
     for t_time, icon, text in timed_items:
         key = (t_time, str(text).lower())
         if key not in seen_timed:
             seen_timed.add(key)
+            if task_status_map.get(str(text).lower()):
+                icon = "✅"
             dedup_timed.append((t_time, icon, text))
 
+    # Deduplicate untimed items (always retain completed tasks in the untimed/done section)
     dedup_untimed = []
     seen_untimed = set()
     for icon, text in untimed_items:
         key = str(text).lower()
-        if key not in seen_untimed and key not in [str(t[2]).lower() for t in dedup_timed]:
-            seen_untimed.add(key)
-            dedup_untimed.append((icon, text))
+        if key in seen_untimed:
+            continue
+
+        # If it's an uncompleted task that is already listed in timed items, skip duplicate
+        if icon != "✅" and key in [str(t[2]).lower() for t in dedup_timed]:
+            continue
+
+        seen_untimed.add(key)
+        dedup_untimed.append((icon, text))
+
+    # If an untimed task is completed and shown in untimed, remove duplicate from timed items so it sits neatly at the bottom
+    completed_untimed_keys = {str(text).lower() for icon, text in dedup_untimed if icon == "✅"}
+    dedup_timed = [t for t in dedup_timed if str(t[2]).lower() not in completed_untimed_keys]
 
     # Sort untimed tasks: uncompleted (▫️) first, completed (✅) second, preserving creation order
     dedup_untimed.sort(key=lambda x: 1 if x[0] == "✅" else 0)
+
 
     days_acc = ["понедельник", "вторник", "среду", "четверг", "пятницу", "субботу", "воскресенье"]
     if start_date == end_date:

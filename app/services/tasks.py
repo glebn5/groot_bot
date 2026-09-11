@@ -47,12 +47,22 @@ class TasksService:
         date_str = target_date.strftime("%Y-%m-%d")
         now_str = get_now().strftime("%Y-%m-%d %H:%M:%S")
 
+        clean_text = task_text.strip()
         try:
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
                 cursor.execute(
+                    "SELECT id FROM user_tasks WHERE user_id = ? AND target_date = ? AND is_completed = 0 AND LOWER(task_text) = LOWER(?)",
+                    (user_id, date_str, clean_text)
+                )
+                existing = cursor.fetchone()
+                if existing:
+                    logger.info(f"Duplicate task '{clean_text}' already exists on {date_str} for user {user_id} (ID={existing[0]}). Skipping duplicate.")
+                    return existing[0]
+
+                cursor.execute(
                     "INSERT INTO user_tasks (user_id, task_text, target_date, is_completed, created_at) VALUES (?, ?, ?, 0, ?)",
-                    (user_id, task_text.strip(), date_str, now_str)
+                    (user_id, clean_text, date_str, now_str)
                 )
                 conn.commit()
                 task_id = cursor.lastrowid
