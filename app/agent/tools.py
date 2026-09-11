@@ -364,6 +364,7 @@ async def create_reminder(context: ToolExecutionContext, message: str, trigger_a
             trigger_at=target_dt,
             message=clean_msg
         )
+        logger.info(f"[REMINDER_CREATED] user_id={context.user_id} chat_id={context.chat_id} job_id={job_id} trigger_at={target_dt.isoformat()} text='{clean_msg}'")
         context_service.set_last_entity(context.user_id, "reminder", {
             "id": job_id,
             "text": clean_msg,
@@ -514,6 +515,23 @@ async def create_calendar_event(
     end_dt = parse_datetime_str(end_time) if end_time else (start_dt + timedelta(hours=1))
 
     try:
+        existing = await calendar_service.find_duplicate_event(title.strip(), start_dt)
+        if existing:
+            event_id = existing.get("id")
+            context_service.set_last_entity(context.user_id, "calendar", {
+                "id": event_id,
+                "title": title.strip(),
+                "start_time": start_dt.isoformat()
+            })
+            context_service.set_last_date(context.user_id, start_dt.date())
+            return ToolResult(
+                success=True,
+                entity_type="calendar",
+                entity_id=event_id,
+                data=existing,
+                message=f"Событие «{title.strip()}» уже есть в Google Календаре на {start_dt.strftime('%d.%m.%Y')}."
+            )
+
         event = await calendar_service.create_event(
             title=title.strip(),
             start_time=start_dt,

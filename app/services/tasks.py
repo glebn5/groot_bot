@@ -382,11 +382,14 @@ class TasksService:
                 conn.commit()
                 count = cursor.rowcount
                 if count > 0:
-                    logger.info(f"Rolled over {count} uncompleted tasks to {today_str} (user_id={user_id})")
+                    logger.info(f"[TASK_ROLLOVER] Rolled over {count} uncompleted tasks to {today_str} (user_id={user_id})")
+                else:
+                    logger.debug(f"[TASK_ROLLOVER] No uncompleted tasks found to roll over to {today_str}")
                 return count
         except Exception as e:
-            logger.error(f"Error rolling over uncompleted tasks: {e}", exc_info=True)
+            logger.error(f"[TASK_ROLLOVER] Error rolling over uncompleted tasks: {e}", exc_info=True)
             return 0
+
 
 
 tasks_service = TasksService()

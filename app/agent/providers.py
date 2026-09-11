@@ -22,30 +22,19 @@ class LLMTurnResponse:
     tool_calls: List[ToolCallRequest] = field(default_factory=list)
 
 
+from app.agent.ai_manager import ai_request_manager
+
 class LLMProvider:
     """
-    Unified LLM provider supporting tool-calling with Groq primary and Gemini fallback.
+    Unified LLM provider supporting tool-calling with Groq primary and Gemini fallback,
+    orchestrated through AIRequestManager for rate-limiting, cooldowns, and concurrency.
     """
     def __init__(self):
-        self.groq_client = AsyncGroq(api_key=settings.GROQ_API_KEY, max_retries=1)
-        self.groq_models = [
-            "llama-3.3-70b-versatile",
-            "openai/gpt-oss-120b",
-            "openai/gpt-oss-20b",
-            "qwen/qwen3.6-27b",
-            "groq/compound"
-        ]
-        self.gemini_models = [
-            "gemini-3.6-flash",
-            "gemini-flash-latest",
-            "gemini-3.7-flash"
-        ]
-        if self._is_valid_gemini_key():
-            genai.configure(api_key=settings.GEMINI_API_KEY)
+        self.ai_manager = ai_request_manager
+        self.gemini_models = ai_request_manager.GEMINI_MODELS
 
     def _is_valid_gemini_key(self) -> bool:
-        key = settings.GEMINI_API_KEY.strip()
-        return bool(key and key != "your_gemini_api_key_here" and not key.startswith("your_"))
+        return self.ai_manager.is_gemini_available()
 
     async def generate_turn(
         self,
@@ -53,63 +42,37 @@ class LLMProvider:
         tools: Optional[List[Dict[str, Any]]] = None
     ) -> LLMTurnResponse:
         """
-        Sends messages and available tools to the LLM.
+        Sends messages and available tools to the LLM via AIRequestManager.
         Returns text content and/or list of requested tool calls.
         """
-        last_error = None
+        response, model_used = await self.ai_manager.execute_tool_turn(messages=messages, tools=tools)
 
-        # 1. Try Groq models with native function calling
-        for model in self.groq_models:
-            try:
-                logger.info(f"Sending turn to Groq model '{model}' with {len(tools or [])} tools...")
-                kwargs: Dict[str, Any] = {
-                    "model": model,
-                    "messages": messages,
-                    "temperature": 0.2
-                }
-                if tools:
-                    kwargs["tools"] = tools
-                    kwargs["tool_choice"] = "auto"
+        if model_used == "gemini-fallback":
+            return LLMTurnResponse(content=str(response), tool_calls=[])
 
-                response = await self.groq_client.chat.completions.create(**kwargs)
-                choice = response.choices[0]
-                msg = choice.message
+        choice = response.choices[0]
+        msg = choice.message
 
-                tool_calls: List[ToolCallRequest] = []
-                if msg.tool_calls:
-                    for tc in msg.tool_calls:
-                        try:
-                            args_dict = json.loads(tc.function.arguments) if isinstance(tc.function.arguments, str) else (tc.function.arguments or {})
-                        except Exception as parse_err:
-                            logger.warning(f"Failed to parse tool arguments as JSON: {tc.function.arguments} ({parse_err})")
-                            args_dict = {}
+        tool_calls: List[ToolCallRequest] = []
+        if msg.tool_calls:
+            for tc in msg.tool_calls:
+                try:
+                    args_dict = json.loads(tc.function.arguments) if isinstance(tc.function.arguments, str) else (tc.function.arguments or {})
+                except Exception as parse_err:
+                    logger.warning(f"Failed to parse tool arguments as JSON: {tc.function.arguments} ({parse_err})")
+                    args_dict = {}
 
-                        tool_calls.append(ToolCallRequest(
-                            id=tc.id,
-                            name=tc.function.name,
-                            arguments=args_dict
-                        ))
+                tool_calls.append(ToolCallRequest(
+                    id=tc.id,
+                    name=tc.function.name,
+                    arguments=args_dict
+                ))
 
-                return LLMTurnResponse(
-                    content=msg.content or "",
-                    tool_calls=tool_calls
-                )
-            except Exception as e:
-                logger.warning(f"Groq model '{model}' failed: {e}. Trying next...")
-                last_error = e
+        return LLMTurnResponse(
+            content=msg.content or "",
+            tool_calls=tool_calls
+        )
 
-        # 2. Fallback to Gemini if Groq is unavailable
-        if self._is_valid_gemini_key():
-            try:
-                logger.info("Falling back to Gemini for agent turn...")
-                return await self._generate_gemini_turn(messages, tools)
-            except Exception as gemini_err:
-                logger.error(f"Gemini fallback failed: {gemini_err}", exc_info=True)
-                last_error = gemini_err
-
-        if last_error:
-            raise last_error
-        raise RuntimeError("No LLM provider was able to process the request.")
 
     async def _generate_gemini_turn(
         self,

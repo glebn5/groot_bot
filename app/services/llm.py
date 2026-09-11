@@ -410,34 +410,17 @@ class LLMService:
         return self._post_process_parsed_action(parsed_action, text_content, now)
 
     async def _process_text(self, sys_prompt: str, user_text: str) -> str:
-        last_error = None
-        for model in self.text_models:
-            try:
-                logger.info(f"Sending text prompt to Groq model: {model}...")
-                response = await self.groq_client.chat.completions.create(
-                    model=model,
-                    messages=[
-                        {"role": "system", "content": sys_prompt},
-                        {"role": "user", "content": user_text}
-                    ],
-                    temperature=0.2,
-                    response_format={"type": "json_object"}
-                )
-                return response.choices[0].message.content or ""
-            except Exception as e:
-                logger.warning(f"Groq text model '{model}' failed: {e}. Trying next model...")
-                last_error = e
+        from app.agent.ai_manager import ai_request_manager
+        content, model_used = await ai_request_manager.execute_text_completion(
+            messages=[
+                {"role": "system", "content": sys_prompt},
+                {"role": "user", "content": user_text}
+            ],
+            temperature=0.2,
+            response_format={"type": "json_object"}
+        )
+        return content
 
-        if self._is_valid_gemini_key():
-            try:
-                logger.info("All Groq text models failed. Trying Gemini fallback...")
-                return await self._process_gemini_text(sys_prompt, user_text)
-            except Exception as gemini_err:
-                logger.error(f"Gemini fallback failed: {gemini_err}")
-
-        if last_error:
-            raise last_error
-        raise RuntimeError("Failed to process text request with LLM.")
 
     async def _process_vision(self, sys_prompt: str, user_text: str, image_bytes: bytes, mime_type: str) -> str:
         if self._is_valid_gemini_key():

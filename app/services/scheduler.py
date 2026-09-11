@@ -68,17 +68,19 @@ def is_in_quiet_hours() -> bool:
         return False
 
 
-async def send_reminder_notification(chat_id: int, message_text: str):
+async def send_reminder_notification(chat_id: int, message_text: str, reminder_id: Optional[str] = None):
     """
     Callback function executed by APScheduler when trigger_at is reached.
     Creates a temporary Bot instance to avoid pickling issues in SQLite jobstore.
     """
+    rem_id_str = f" id={reminder_id}" if reminder_id else ""
+    logger.info(f"[REMINDER_TRIGGERED]{rem_id_str} chat_id={chat_id} text='{message_text}'")
+
     bot = Bot(
         token=settings.BOT_TOKEN,
         default=DefaultBotProperties(parse_mode=ParseMode.MARKDOWN)
     )
     try:
-        logger.info(f"Sending scheduled reminder to chat_id={chat_id}: '{message_text}'")
         formatted_msg = f"⏰ **Напоминание:**\n\n{message_text}"
         keyboard = get_reminder_inline_keyboard()
         try:
@@ -90,8 +92,9 @@ async def send_reminder_notification(chat_id: int, message_text: str):
                 reply_markup=keyboard,
                 parse_mode=None
             )
+        logger.info(f"[REMINDER_SENT_SUCCESS]{rem_id_str} chat_id={chat_id}")
     except Exception as e:
-        logger.error(f"Error sending scheduled reminder notification: {e}", exc_info=True)
+        logger.error(f"[REMINDER_SEND_FAILED]{rem_id_str} chat_id={chat_id} error={e}", exc_info=True)
     finally:
         await bot.session.close()
 
@@ -107,7 +110,13 @@ class SchedulerService:
         jobstores = {
             'default': SQLAlchemyJobStore(url=f"sqlite:///{db_path}")
         }
-        self.scheduler = AsyncIOScheduler(jobstores=jobstores, timezone=get_tz())
+        # Grace period for delayed jobs across reboots (prevents 'Run time missed' warnings)
+        job_defaults = {
+            'misfire_grace_time': 3600,
+            'coalesce': True
+        }
+        self.scheduler = AsyncIOScheduler(jobstores=jobstores, job_defaults=job_defaults, timezone=get_tz())
+
 
     def start(self):
         if not self.scheduler.running:
@@ -161,15 +170,20 @@ class SchedulerService:
         except Exception:
             pass
 
+        import uuid
+        job_id = f"rem_{uuid.uuid4().hex[:10]}"
+
         job = self.scheduler.add_job(
             send_reminder_notification,
             'date',
             run_date=trigger_at,
-            args=[chat_id, message],
-            misfire_grace_time=300
+            args=[chat_id, message, job_id],
+            id=job_id,
+            misfire_grace_time=3600
         )
-        logger.info(f"Scheduled reminder (Job ID={job.id}) for chat_id={chat_id} at {trigger_at}")
+        logger.info(f"[REMINDER_SCHEDULED] id={job.id} chat_id={chat_id} run_at={trigger_at.isoformat()} text='{message}'")
         return job.id
+
 
     def get_reminders_for_date(self, target_date, chat_id=None) -> list:
         """

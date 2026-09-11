@@ -8,6 +8,7 @@ from app.agent.schemas import ToolExecutionContext, ToolResult, AgentResponse
 from app.agent.prompts import GROOT_SYSTEM_PROMPT
 from app.agent.registry import ToolRegistry, default_registry
 from app.agent.providers import LLMProvider, llm_provider, ToolCallRequest
+from app.agent.ai_manager import ai_request_manager
 from app.services.context import context_service
 from app.utils.timezone import get_now
 
@@ -40,9 +41,19 @@ class GrootAgent:
         clean_text = (user_text or "").strip()
         logger.info(f"[agent.request] user_id={user_id} text='{clean_text}'")
 
+        async with ai_request_manager.get_user_lock(user_id):
+            return await self._process_message_internal(user_id, chat_id, clean_text)
+
+    async def _process_message_internal(
+        self,
+        user_id: int,
+        chat_id: int,
+        clean_text: str
+    ) -> AgentResponse:
         exec_context = ToolExecutionContext(user_id=user_id, chat_id=chat_id)
         now = get_now()
         days_ru = ["понедельник", "вторник", "среда", "четверг", "пятница", "суббота", "воскресенье"]
+
         day_str = f"{now.strftime('%A')} ({days_ru[now.weekday()]})"
 
         # 1. Check for confirmation of pending destructive actions

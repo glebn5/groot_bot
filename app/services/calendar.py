@@ -1,4 +1,5 @@
 import os
+import socket
 import logging
 from datetime import datetime, timedelta
 from typing import Optional
@@ -10,6 +11,9 @@ from app.utils.timezone import get_tz
 logger = logging.getLogger(__name__)
 
 SCOPES = ['https://www.googleapis.com/auth/calendar']
+
+# Protect against hanging sockets or broken pipe drops
+socket.setdefaulttimeout(15.0)
 
 
 class CalendarService:
@@ -34,6 +38,32 @@ class CalendarService:
         else:
             logger.warning(f"Google Service Account file not found at '{sa_file}'. Calendar integration disabled.")
 
+    async def find_duplicate_event(
+        self,
+        title: str,
+        start_time: datetime
+    ) -> Optional[dict]:
+        """
+        Checks if an event with a matching or very similar title already exists on that date.
+        Prevents duplicate creation.
+        """
+        if not self.service:
+            return None
+
+        clean_title = title.strip().lower()
+        target_date = start_time.date()
+        try:
+            events = await self.get_events_for_date(target_date)
+            for ev in events:
+                ev_summary = (ev.get("summary") or "").strip().lower()
+                if not ev_summary:
+                    continue
+                if clean_title == ev_summary or clean_title in ev_summary or ev_summary in clean_title:
+                    return ev
+        except Exception as e:
+            logger.warning(f"Error checking for duplicate calendar event: {e}")
+        return None
+
     async def create_event(
         self,
         title: str,
@@ -42,11 +72,17 @@ class CalendarService:
         description: Optional[str] = None
     ) -> Optional[dict]:
         """
-        Creates an event in Google Calendar.
+        Creates an event in Google Calendar with idempotency and duplicate checking.
         """
         if not self.service:
             logger.warning("Google Calendar service not initialized. Skipping event creation.")
             return None
+
+        # 1. Deduplication check
+        existing = await self.find_duplicate_event(title, start_time)
+        if existing:
+            logger.info(f"Duplicate calendar event detected for '{title}' on {start_time.date()}. Returning existing event ID={existing.get('id')}.")
+            return existing
 
         if not end_time:
             end_time = start_time + timedelta(hours=1)
@@ -64,17 +100,25 @@ class CalendarService:
             },
         }
 
-        try:
-            logger.info(f"Creating Google Calendar event: '{title}' at {start_time}")
-            event = self.service.events().insert(
-                calendarId=settings.GOOGLE_CALENDAR_ID,
-                body=event_body
-            ).execute()
-            logger.info(f"Google Calendar event created successfully: {event.get('htmlLink')}")
-            return event
-        except Exception as e:
-            logger.error(f"Error creating Google Calendar event: {e}", exc_info=True)
-            raise RuntimeError(f"Failed to create Google Calendar event: {str(e)}")
+        # 2. Resilient execute with reconnection retry
+        for attempt in range(2):
+            try:
+                logger.info(f"Creating Google Calendar event (attempt {attempt + 1}): '{title}' at {start_time}")
+                event = self.service.events().insert(
+                    calendarId=settings.GOOGLE_CALENDAR_ID,
+                    body=event_body
+                ).execute()
+                logger.info(f"Google Calendar event created successfully: {event.get('htmlLink')}")
+                return event
+            except (BrokenPipeError, ConnectionResetError, socket.timeout) as net_err:
+                logger.warning(f"Network error on Google Calendar (attempt {attempt + 1}): {net_err}. Reconnecting...")
+                self._init_service()
+                if attempt == 1:
+                    raise RuntimeError(f"Failed to connect to Google Calendar: {net_err}")
+            except Exception as e:
+                logger.error(f"Error creating Google Calendar event: {e}", exc_info=True)
+                raise RuntimeError(f"Failed to create Google Calendar event: {str(e)}")
+
 
     async def get_events_for_date(self, target_date) -> list:
         """
